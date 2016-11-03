@@ -8,7 +8,6 @@ import (
   "net/http"
   "net/http/httputil"
   "os"
-  "time"
   "os/signal"
   "syscall"
   "strings"
@@ -23,11 +22,9 @@ type BackendResponse struct {
   hints string
 }
 
-var store *bg.Store
-
 /* Goroutine for handling hints. */
 
-func handleHint(response BackendResponse, hint string) {
+func handleHint(store *bg.Store, response BackendResponse, hint string) {
   /* Split the hint as path:name */
   parts := strings.Split(hint, `:`)
   if len(parts) > 2 {
@@ -49,23 +46,26 @@ func handleHint(response BackendResponse, hint string) {
   /* Build the key and increment the counter */
   parts[0] = strings.Join(path, ".")
   key := "c." + strings.Join(parts, ".")
+  store.Get(key)
   store.Incr(key)
   /* If a counter name is given, also increment the "total" counter. */
   if len(parts) == 2 {
     parts[1] = "total"
     key = "c." + strings.Join(parts, ".")
+    store.Get(key)
     store.Incr(key)
   }
   log.Printf("hint %s %s\n", response.clientIp, hint)
 }
-func handleHints(ch chan BackendResponse) {
+
+func handleHints(store *bg.Store, ch chan BackendResponse) {
   for {
     response := <-ch
     hints := strings.Fields(response.hints)
     for _, hint := range hints {
       /* Unquote */
       hint = strings.Trim(hint, `"`)
-      handleHint(response, hint)
+      handleHint(store, response, hint)
     }
   }
 }
@@ -105,7 +105,6 @@ func (t ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err er
 func main() {
   var err error
   var tempInt int64
-  var tempFloat float64
 
   log.Printf("bebras-guard is starting\n")
 
@@ -119,25 +118,9 @@ func main() {
       DB:       0,
   })
 
-  /* Build the counter store.
-     config.max_counters sets the size of the local counters LRU cache (default 64k).
-     config.counter_ttl sets the redis TTL on shared counters, in seconds (default 1h).
-  */
-  var maxCounters int = 65536
-  if tempInt, err = redisClient.Get("config.max_counters").Int64(); err == nil {
-    maxCounters = int(tempInt)
-  }
-  var counterTtl int = 3600
-  if tempInt, err = redisClient.Get("config.counter_ttl").Int64(); err == nil {
-    counterTtl = int(tempInt)
-  }
-  var localCounterThreshold int64 = 100
-  if tempInt, err = redisClient.Get("config.local_counter_threshold").Int64(); err == nil {
-    localCounterThreshold = tempInt
-  }
-  store = bg.NewCounterStore(maxCounters, redisClient, time.Duration(counterTtl) * time.Second, localCounterThreshold)
-  log.Printf("store{MaxCounters: %d, CounterTtl: %d, LocalCounterThreshold: %d}\n",
-    maxCounters, counterTtl, localCounterThreshold)
+  /* Build and configure the counter store. */
+  var store *bg.Store = bg.NewCounterStore(redisClient)
+  store.Configure()
 
   /* Add signal handlers to flush the store on exit. */
   quitChannel := make(chan os.Signal, 1)
@@ -151,30 +134,13 @@ func main() {
     os.Exit(0)
   }()
 
-  /* Periodically trim a fraction of the least-recently-used counters. */
-  var flushInterval int = 60
-  if tempInt, err = redisClient.Get("config.flush_interval").Int64(); err == nil {
-    flushInterval = int(tempInt)
-  }
-  var flushRatio float64 = 0.1
-  if tempFloat, err = redisClient.Get("config.flush_ratio").Float64(); err == nil {
-    flushRatio = tempFloat
-  }
-  flushTicker := time.NewTicker(time.Duration(flushInterval) * time.Second)
-  go func() {
-    for {
-      <-flushTicker.C
-      store.Trim(flushRatio)
-    }
-  }()
-
   /* Buffer a number of responses without blocking. */
   var responseQueueSize int = 128
   if tempInt, err = redisClient.Get("config.response_queue_size").Int64(); err != nil {
     responseQueueSize = int(tempInt)
   }
   hintsChannel := make(chan BackendResponse, responseQueueSize)
-  go handleHints(hintsChannel)
+  go handleHints(store, hintsChannel)
 
   /* Select the backend transport and director. */
   var proxyDirector func (req *http.Request)
