@@ -49,7 +49,7 @@ func handleHint(response BackendResponse, hint string) {
   /* If a counter name is given, also increment the "total" counter. */
   if len(parts) == 2 {
     parts[1] = "total"
-    key = strings.Join(parts, ":")
+    key = "c." + strings.Join(parts, ".")
     store.Incr(key)
   }
   log.Printf("%s: %s\n", response.clientIp, hint)
