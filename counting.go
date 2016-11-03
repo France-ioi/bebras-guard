@@ -110,10 +110,10 @@ func (c *Store) Push(key string, counter *Counter) {
 }
 
 func (c *Store) Trim(ratio float64) {
-  var targetLen int = int(math.Floor(float64(c.lru.Len()) * (1 - ratio)))
+  var toFlush int = int(math.Floor(float64(c.lru.MaxEntries) * ratio))
+  var targetLen int = c.lru.Len() - toFlush
   if (targetLen < 0) {
-    // Ignore a trim by a negative ratio.
-    return
+    targetLen = 0
   }
   c.rw.Lock()
   defer c.rw.Unlock()
