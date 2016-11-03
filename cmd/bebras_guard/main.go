@@ -37,7 +37,7 @@ func handleHint(response BackendResponse, hint string) {
   var path []string = strings.Split(parts[0], `.`)
   /* Perform tag replacement */
   for tagIndex, tag := range path {
-    if tag == "ClientIp" {
+    if tag == "ClientIp" || tag == "ClientIP" {
       ip := net.ParseIP(response.clientIp)
       path[tagIndex] = hex.EncodeToString(ip)
     }
