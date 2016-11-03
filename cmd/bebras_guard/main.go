@@ -39,6 +39,10 @@ func handleHint(response BackendResponse, hint string) {
   for tagIndex, tag := range path {
     if tag == "ClientIp" || tag == "ClientIP" {
       ip := net.ParseIP(response.clientIp)
+      /* ParseIP always returns an IPv6 address, try to convert to IPv4 */
+      if ip4 := ip.To4(); ip4 != nil {
+        ip = ip4
+      }
       path[tagIndex] = "IP(" + hex.EncodeToString(ip) + ")"
     }
   }
