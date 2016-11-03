@@ -99,8 +99,12 @@ func main() {
 
   log.Printf("bebras-guard is starting\n")
 
+  redisAddr := os.Getenv("REDIS_SERVER")
+  if redisAddr == "" {
+    redisAddr = "127.0.0.1:6379"
+  }
   redisClient := redis.NewClient(&redis.Options{
-      Addr:     os.Getenv("REDIS_SERVER"),
+      Addr:     redisAddr,
       Password: "",
       DB:       0,
   })
