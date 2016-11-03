@@ -14,7 +14,7 @@ import (
 type Counter struct {
   Local int64
   Shared int64
-  SharedExpiry int64
+  ReloadTime int64
 }
 
 func (c Counter) Value() (result int64) {
@@ -60,9 +60,9 @@ func (c *Store) Get(key string) (result *Counter) {
   c.rw.Lock()
   if val, hit := c.lru.Get(key); hit {
     result = val.(*Counter)
-    pull = result.SharedExpiry != 0 && result.SharedExpiry <= time.Now().Unix()
+    pull = result.ReloadTime <= time.Now().Unix()
   } else {
-    result = &Counter{Local: 0, Shared: 0, SharedExpiry: 0}
+    result = &Counter{Local: 0, Shared: 0, ReloadTime: time.Now().Unix()}
     c.lru.Add(key, result)
     pull = true
   }
@@ -84,7 +84,7 @@ func (c *Store) Incr(key string) {
       c.Push(key, counter)
     }
   } else {
-    counter = &Counter{Local: 1, Shared: 0, SharedExpiry: 0}
+    counter = &Counter{Local: 1, Shared: 0, ReloadTime: time.Now().Unix() + c.reloadInterval}
     c.lru.Add(key, counter)
   }
   c.rw.Unlock()
@@ -97,7 +97,7 @@ func (c *Store) Pull(key string, counter *Counter) {
   var err error
   if value, err = c.rc.Get(key).Int64(); err == nil {
     counter.Shared = value
-    counter.SharedExpiry = time.Now().Unix() + 60
+    counter.ReloadTime = time.Now().Unix() + c.reloadInterval
   }
 }
 
