@@ -11,6 +11,41 @@ import (
   _ "log"
 )
 
+type StoreConfig struct {
+
+  // Size of the local LRU cache.
+  LocalCacheSize int
+
+  // redis TTL on shared part of counter.
+  CounterTtl int
+
+  // Maximum local part of counter before a push occurs.
+  LocalMaximum int64
+
+  // Maximum duration before reloading the shared part from redis.
+  ReloadInterval int64
+
+  // Interval in seconds between automatic partial flush of the cache.
+  FlushInterval int64
+
+  // Fraction of the cache flushed every flushInterval seconds.
+  FlushRatio float64
+
+}
+
+type Store struct {
+  counterTtl time.Duration
+  localMaximum int64
+  reloadInterval int64
+  flushInterval int64
+  flushRatio float64
+  rc  *redis.Client
+  rw  sync.RWMutex
+  lru *lru.Cache
+  ft  *time.Ticker
+  ftStop chan bool
+}
+
 type Counter struct {
   Local int64
   Shared int64
@@ -19,24 +54,6 @@ type Counter struct {
 
 func (c Counter) Value() (result int64) {
   return c.Local + c.Shared;
-}
-
-type Store struct {
-  // SharedTtl: redis TTL on shared part of counter
-  sharedTtl time.Duration
-  // LocalMaximum: maximum local part of counter before push
-  localMaximum int64
-  // ReloadInterval: maximum duration before reloading the shared part from redis
-  reloadInterval int64
-  // flushInterval: interval in seconds between automatic partial flush of the cache
-  flushInterval int64
-  // flushRatio: fraction of the cache flushed every flushInterval seconds
-  flushRatio float64
-  rc  *redis.Client
-  rw  sync.RWMutex
-  lru *lru.Cache
-  ft  *time.Ticker
-  ftStop chan bool
 }
 
 /* Returns the counter associated with the given key from the local store,
@@ -110,7 +127,7 @@ func (c *Store) Push(key string, counter *Counter) {
       fmt.Printf("IncrBy %d failed on %s\n", counter.Local, key)
       return
     }
-    if err = c.rc.Expire(key, c.sharedTtl).Err(); err != nil {
+    if err = c.rc.Expire(key, c.counterTtl).Err(); err != nil {
       fmt.Printf("Expire failed on %s\n", key)
       return
     }
@@ -155,58 +172,42 @@ func (c *Store) resize(maxEntries int) {
   }
 }
 
-func (c *Store) Configure() {
-  var err error
-  var tempInt int64
-  var tempFloat float64
-  /* Load settings from redis. */
-  var localCacheSize int = 65536
-  var counterTtl int = 3600
-  var localMaximum int64 = 100
-  var reloadInterval int64 = 60
-  var flushInterval int64 = 60
-  var flushRatio float64 = 0.1
-  if tempInt, err = c.rc.Get("config.counters.local_cache_size").Int64(); err == nil {
-    localCacheSize = int(tempInt)
+/* Returns default Config. */
+func NewStoreConfig() (StoreConfig) {
+  return StoreConfig{
+    LocalCacheSize: 65536,
+    CounterTtl: 3600,
+    LocalMaximum: 100,
+    ReloadInterval: 60,
+    FlushInterval: 60,
+    FlushRatio: 0.1,
   }
-  if tempInt, err = c.rc.Get("config.counters.ttl").Int64(); err == nil {
-    counterTtl = int(tempInt)
-  }
-  if tempInt, err = c.rc.Get("config.counters.local_maximum").Int64(); err == nil {
-    localMaximum = tempInt
-  }
-  if tempInt, err = c.rc.Get("config.counters.reload_interval").Int64(); err == nil {
-    reloadInterval = tempInt
-  }
-  if tempInt, err = c.rc.Get("config.counters.flush_interval").Int64(); err == nil {
-    flushInterval = tempInt
-  }
-  if tempFloat, err = c.rc.Get("config.counters.flush_ratio").Float64(); err == nil {
-    flushRatio = tempFloat
-  }
-  /* Update settings */
+}
+
+/* Updates the store's configuration. */
+func (c *Store) Configure(config StoreConfig) {
   c.rw.Lock()
   defer c.rw.Unlock()
-  c.sharedTtl = time.Duration(counterTtl) * time.Second
-  c.localMaximum = localMaximum
-  c.reloadInterval = reloadInterval
-  c.flushRatio = flushRatio
+  c.counterTtl = time.Duration(config.CounterTtl) * time.Second
+  c.localMaximum = config.LocalMaximum
+  c.reloadInterval = config.ReloadInterval
+  c.flushRatio = config.FlushRatio
   /* Resize the cache. */
-  if c.lru == nil || c.lru.MaxEntries != localCacheSize {
-    c.resize(localCacheSize)
+  if c.lru == nil || c.lru.MaxEntries != config.LocalCacheSize {
+    c.resize(config.LocalCacheSize)
   }
   /* Reset the ticker interval. */
-  if flushInterval != c.flushInterval {
-    c.flushInterval = flushInterval
+  if config.FlushInterval != c.flushInterval {
+    c.flushInterval = config.FlushInterval
     if c.ft != nil {
       /* Signal the old goroutine to stop. */
       c.ft.Stop()
       c.ft = nil
       c.ftStop <- true
     }
-    if flushInterval > 0 {
+    if config.FlushInterval > 0 {
       /* Start a ticker and flush goroutine. */
-      c.ft = time.NewTicker(time.Duration(flushInterval) * time.Second)
+      c.ft = time.NewTicker(time.Duration(config.FlushInterval) * time.Second)
       go func(ticker *time.Ticker) {
         for {
           select {
