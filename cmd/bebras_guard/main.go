@@ -115,17 +115,17 @@ func main() {
   if tempVal, err = redisClient.Get("config.max_counters").Int64(); err == nil {
     maxCounters = int(tempVal)
   }
-  var counterTtl time.Duration = 1 * time.Hour
+  var counterTtl int = 3600
   if tempVal, err = redisClient.Get("config.counter_ttl").Int64(); err == nil {
-    counterTtl = time.Duration(tempVal) * time.Second
+    counterTtl = int(tempVal)
   }
   var localCounterThreshold int64 = 100
   if tempVal, err = redisClient.Get("config.local_counter_threshold").Int64(); err == nil {
     localCounterThreshold = tempVal
   }
-  store = bg.NewCounterStore(maxCounters, redisClient, counterTtl * time.Second, localCounterThreshold)
+  store = bg.NewCounterStore(maxCounters, redisClient, time.Duration(counterTtl) * time.Second, localCounterThreshold)
   log.Printf("store{MaxCounters: %d, CounterTtl: %d, LocalCounterThreshold: %d}\n",
-    maxCounters, int(counterTtl / time.Second), localCounterThreshold)
+    maxCounters, counterTtl, localCounterThreshold)
 
   /* Add signal handlers to flush the store on exit. */
   quitChannel := make(chan os.Signal, 1)
