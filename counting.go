@@ -85,7 +85,7 @@ func (c *Store) Incr(key string) {
 func (c *Store) Pull(key string, counter *Counter) {
   var value int64
   var err error
-  if value, err = c.rc.Get(key).Int64(); err != nil {
+  if value, err = c.rc.Get(key).Int64(); err == nil {
     counter.Shared = value
     counter.SharedExpiry = time.Now().Unix() + 60
   }
