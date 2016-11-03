@@ -100,6 +100,8 @@ func (t ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err er
 
 func main() {
   var err error
+  var tempInt int64
+  var tempFloat float64
 
   log.Printf("bebras-guard is starting\n")
 
@@ -117,18 +119,17 @@ func main() {
      config.max_counters sets the size of the local counters LRU cache (default 64k).
      config.counter_ttl sets the redis TTL on shared counters, in seconds (default 1h).
   */
-  var tempVal int64
   var maxCounters int = 65536
-  if tempVal, err = redisClient.Get("config.max_counters").Int64(); err == nil {
-    maxCounters = int(tempVal)
+  if tempInt, err = redisClient.Get("config.max_counters").Int64(); err == nil {
+    maxCounters = int(tempInt)
   }
   var counterTtl int = 3600
-  if tempVal, err = redisClient.Get("config.counter_ttl").Int64(); err == nil {
-    counterTtl = int(tempVal)
+  if tempInt, err = redisClient.Get("config.counter_ttl").Int64(); err == nil {
+    counterTtl = int(tempInt)
   }
   var localCounterThreshold int64 = 100
-  if tempVal, err = redisClient.Get("config.local_counter_threshold").Int64(); err == nil {
-    localCounterThreshold = tempVal
+  if tempInt, err = redisClient.Get("config.local_counter_threshold").Int64(); err == nil {
+    localCounterThreshold = tempInt
   }
   store = bg.NewCounterStore(maxCounters, redisClient, time.Duration(counterTtl) * time.Second, localCounterThreshold)
   log.Printf("store{MaxCounters: %d, CounterTtl: %d, LocalCounterThreshold: %d}\n",
@@ -146,19 +147,27 @@ func main() {
     os.Exit(0)
   }()
 
-  /* Periodically trim 10% of the counters. */
-  flushTicker := time.NewTicker(60 * time.Second)
+  /* Periodically trim a fraction of the least-recently-used counters. */
+  var flushInterval int = 60
+  if tempInt, err = redisClient.Get("config.flush_interval").Int64(); err == nil {
+    flushInterval = int(tempInt)
+  }
+  var flushRatio float64 = 0.1
+  if tempFloat, err = redisClient.Get("config.flush_ratio").Float64(); err == nil {
+    flushRatio = tempFloat
+  }
+  flushTicker := time.NewTicker(time.Duration(flushInterval) * time.Second)
   go func() {
     for {
       <-flushTicker.C
-      store.Trim(0.1)
+      store.Trim(flushRatio)
     }
   }()
 
   /* Buffer a number of responses without blocking. */
   var responseQueueSize int = 128
-  if tempVal, err = redisClient.Get("config.response_queue_size").Int64(); err != nil {
-    responseQueueSize = int(tempVal)
+  if tempInt, err = redisClient.Get("config.response_queue_size").Int64(); err != nil {
+    responseQueueSize = int(tempInt)
   }
   hintsChannel := make(chan BackendResponse, responseQueueSize)
   go handleHints(hintsChannel)
