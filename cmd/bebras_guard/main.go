@@ -175,7 +175,7 @@ func main() {
   /* Select the backend transport and director. */
   var proxyDirector func (req *http.Request)
   var backendTransport http.RoundTripper
-  forceHttpHost := os.Getenv("FOCRCE_HTTP_HOST")
+  forceHttpHost := os.Getenv("FORCE_HTTP_HOST")
   if backendSocket := os.Getenv("BACKEND_SOCKET"); backendSocket != "" {
     backendTransport = bg.FixedUnixTransport(backendSocket)
     proxyDirector = func (req *http.Request) {
@@ -192,7 +192,6 @@ func main() {
       if forceHttpHost != "" {
         req.Host = forceHttpHost
       }
-      req.Host = "concours.castor-informatique.fr"
     }
   }
 
