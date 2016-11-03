@@ -80,7 +80,14 @@ func (t ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err er
   }
   hints := res.Header.Get("X-Backend-Hints")
   if hints != "" {
+    /* Normally we run behind a load-balancer which will set X-Real-IP. */
     realIp := req.Header.Get("X-Real-IP")
+    if realIp == "" {
+      /* When testing locally, the X-Real-IP header is missing. */
+      colonIndex := strings.LastIndex(req.RemoteAddr, `:`)
+      realIp = req.RemoteAddr[0:colonIndex]
+      realIp = strings.Trim(realIp, `[]`)
+    }
     t.hintsChannel <- BackendResponse{realIp, hints}
   }
   res.Header.Set("X-Guarded", "true")
