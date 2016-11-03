@@ -8,7 +8,6 @@ import (
   "time"
   "sync/atomic"
   "math"
-  _ "log"
 )
 
 type StoreConfig struct {
@@ -31,6 +30,26 @@ type StoreConfig struct {
   // Fraction of the cache flushed every flushInterval seconds.
   FlushRatio float64
 
+  // Print debugging messages?
+  Debug bool
+
+  // Hide all messages? (such as redis errors)
+  Quiet bool
+
+}
+
+/* Returns default Config. */
+func NewStoreConfig() (StoreConfig) {
+  return StoreConfig{
+    LocalCacheSize: 65536,
+    CounterTtl: 3600,
+    LocalMaximum: 100,
+    ReloadInterval: 60,
+    FlushInterval: 60,
+    FlushRatio: 0.1,
+    Debug: false,
+    Quiet: false,
+  }
 }
 
 type Store struct {
@@ -39,6 +58,8 @@ type Store struct {
   reloadInterval int64
   flushInterval int64
   flushRatio float64
+  debug bool
+  quiet bool
   rc  *redis.Client
   rw  sync.RWMutex
   lru *lru.Cache
@@ -74,13 +95,22 @@ func (c *Store) FastGet(key string) (result *Counter) {
 func (c *Store) Get(key string) (result *Counter) {
   /* Add the new counter to the cache if missing */
   var pull bool
+  if c.debug {
+    fmt.Printf("get %s\n", key)
+  }
   c.rw.Lock()
   if val, hit := c.lru.Get(key); hit {
     result = val.(*Counter)
     pull = result.ReloadTime <= time.Now().Unix()
+    if c.debug {
+      fmt.Printf("got %s (%d+%d) %s\n", key, result.Shared, result.Local, pull)
+    }
   } else {
     result = &Counter{Local: 0, Shared: 0, ReloadTime: time.Now().Unix()}
     c.lru.Add(key, result)
+    if c.debug {
+      fmt.Printf("new %s\n", key)
+    }
     pull = true
   }
   c.rw.Unlock()
@@ -115,6 +145,9 @@ func (c *Store) Pull(key string, counter *Counter) {
   if value, err = c.rc.Get(key).Int64(); err == nil {
     counter.Shared = value
     counter.ReloadTime = time.Now().Unix() + c.reloadInterval
+    if c.debug {
+      fmt.Printf("pulled %s (%d+%d)\n", key, counter.Shared, counter.Local)
+    }
   }
 }
 
@@ -124,12 +157,19 @@ func (c *Store) Push(key string, counter *Counter) {
   if (counter.Local != 0) {
     var err error
     if err = c.rc.IncrBy(key, counter.Local).Err(); err != nil {
-      fmt.Printf("IncrBy %d failed on %s\n", counter.Local, key)
+      if !c.quiet {
+        fmt.Printf("IncrBy %d failed on %s\n", counter.Local, key)
+      }
       return
     }
     if err = c.rc.Expire(key, c.counterTtl).Err(); err != nil {
-      fmt.Printf("Expire failed on %s\n", key)
+      if !c.quiet {
+        fmt.Printf("Expire failed on %s\n", key)
+      }
       return
+    }
+    if c.debug {
+      fmt.Printf("pushed %s (%d+%d)\n", key, counter.Shared, counter.Local)
     }
     counter.Shared += counter.Local
     counter.Local = 0
@@ -172,18 +212,6 @@ func (c *Store) resize(maxEntries int) {
   }
 }
 
-/* Returns default Config. */
-func NewStoreConfig() (StoreConfig) {
-  return StoreConfig{
-    LocalCacheSize: 65536,
-    CounterTtl: 3600,
-    LocalMaximum: 100,
-    ReloadInterval: 60,
-    FlushInterval: 60,
-    FlushRatio: 0.1,
-  }
-}
-
 /* Updates the store's configuration. */
 func (c *Store) Configure(config StoreConfig) {
   c.rw.Lock()
@@ -192,6 +220,8 @@ func (c *Store) Configure(config StoreConfig) {
   c.localMaximum = config.LocalMaximum
   c.reloadInterval = config.ReloadInterval
   c.flushRatio = config.FlushRatio
+  c.debug = config.Debug
+  c.quiet = config.Quiet
   /* Resize the cache. */
   if c.lru == nil || c.lru.MaxEntries != config.LocalCacheSize {
     c.resize(config.LocalCacheSize)

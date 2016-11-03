@@ -124,6 +124,12 @@ func LoadStoreConfig(rc *redis.Client) (bg.StoreConfig) {
   if tempFloat, err = rc.Get("config.counters.flush_ratio").Float64(); err == nil {
     s.FlushRatio = tempFloat
   }
+  if tempStr = rc.Get("config.counters.debug").String(); err == nil {
+    s.Debug = tempStr == "true"
+  }
+  if tempStr = rc.Get("config.counters.quiet").String(); err == nil {
+    s.Debug = tempStr == "true"
+  }
   return s
 }
 
