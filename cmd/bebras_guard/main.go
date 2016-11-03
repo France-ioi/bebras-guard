@@ -101,35 +101,16 @@ func (t ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err er
 //
 
 /* Loads and returns Config from redis. */
-func LoadStoreConfig(rc *redis.Client) (bg.StoreConfig) {
-  var err error
-  var tempInt int64
-  var tempFloat float64
+func LoadStoreConfig(c *bg.ConfigStore) (bg.StoreConfig) {
   s := bg.NewStoreConfig()
-  if tempInt, err = rc.Get("config.counters.local_cache_size").Int64(); err == nil {
-    s.LocalCacheSize = int(tempInt)
-  }
-  if tempInt, err = rc.Get("config.counters.ttl").Int64(); err == nil {
-    s.CounterTtl = int(tempInt)
-  }
-  if tempInt, err = rc.Get("config.counters.local_maximum").Int64(); err == nil {
-    s.LocalMaximum = tempInt
-  }
-  if tempInt, err = rc.Get("config.counters.reload_interval").Int64(); err == nil {
-    s.ReloadInterval = tempInt
-  }
-  if tempInt, err = rc.Get("config.counters.flush_interval").Int64(); err == nil {
-    s.FlushInterval = tempInt
-  }
-  if tempFloat, err = rc.Get("config.counters.flush_ratio").Float64(); err == nil {
-    s.FlushRatio = tempFloat
-  }
-  if tempStr = rc.Get("config.counters.debug").String(); err == nil {
-    s.Debug = tempStr == "true"
-  }
-  if tempStr = rc.Get("config.counters.quiet").String(); err == nil {
-    s.Debug = tempStr == "true"
-  }
+  c.GetInt("counters.local_cache_size", &s.LocalCacheSize)
+  c.GetInt("counters.ttl", &s.CounterTtl)
+  c.GetInt64("counters.local_maximum", &s.LocalMaximum)
+  c.GetInt64("counters.reload_interval", &s.ReloadInterval)
+  c.GetInt64("counters.flush_interval", &s.FlushInterval)
+  c.GetFloat64("counters.flush_ratio", &s.FlushRatio)
+  c.GetBool("counters.debug", &s.Debug)
+  c.GetBool("counters.quiet", &s.Quiet)
   return s
 }
 
@@ -149,9 +130,11 @@ func main() {
       DB:       0,
   })
 
+  config := bg.NewConfigStore(redisClient)
+
   /* Build and configure the counter store. */
   var store *bg.Store = bg.NewCounterStore(redisClient)
-  store.Configure(LoadStoreConfig(redisClient))
+  store.Configure(LoadStoreConfig(config))
 
   /* Add signal handlers to flush the store on exit. */
   quitChannel := make(chan os.Signal, 1)
