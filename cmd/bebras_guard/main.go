@@ -39,7 +39,7 @@ func handleHint(response BackendResponse, hint string) {
   for tagIndex, tag := range path {
     if tag == "ClientIp" || tag == "ClientIP" {
       ip := net.ParseIP(response.clientIp)
-      path[tagIndex] = hex.EncodeToString(ip)
+      path[tagIndex] = "IP(" + hex.EncodeToString(ip) + ")"
     }
   }
   /* Build the key and increment the counter */
