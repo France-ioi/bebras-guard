@@ -130,12 +130,10 @@ func main() {
   log.Printf("store{MaxCounters: %d, CounterTtl: %d, LocalCounterThreshold: %d}\n",
     maxCounters, int(counterTtl / time.Second), localCounterThreshold)
 
-  // Catch SIGINT, save store to redis
+  /* Add signal handlers to flush the store on exit. */
   quitChannel := make(chan os.Signal, 1)
-  // SIGINT is sent when by Ctrl-C.
-  // SIGHUP is sent by runit for graceful shutdown.
-  signal.Notify(quitChannel, syscall.SIGINT) // Ctrl-C
-  signal.Notify(quitChannel, syscall.SIGHUP)
+  signal.Notify(quitChannel, syscall.SIGINT)  // Ctrl-C.
+  signal.Notify(quitChannel, syscall.SIGHUP)  // runit graceful shutdown
   go func(){
     <-quitChannel
     log.Printf("flushing store...")
