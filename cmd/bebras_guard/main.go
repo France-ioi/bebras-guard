@@ -134,7 +134,7 @@ func main() {
   go func(){
     <-quitChannel
     log.Printf("flushing store...")
-    store.Trim(0)
+    store.Trim(1)
     log.Printf(" done\n")
     os.Exit(0)
   }()
