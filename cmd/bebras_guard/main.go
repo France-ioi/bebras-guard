@@ -44,7 +44,7 @@ func handleHint(response BackendResponse, hint string) {
   }
   /* Build the key and increment the counter */
   parts[0] = strings.Join(path, ".")
-  key := strings.Join(parts, ":")
+  key := "c." + strings.Join(parts, ".")
   store.Incr(key)
   /* If a counter name is given, also increment the "total" counter. */
   if len(parts) == 2 {
