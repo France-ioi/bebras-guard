@@ -4,6 +4,7 @@ import (
 //  "container/heap"
   "gopkg.in/redis.v5"
   "log"
+  "net"
   "net/http"
   "net/http/httputil"
   "os"
@@ -12,6 +13,7 @@ import (
   "syscall"
   "strings"
   _ "strconv"
+  "encoding/hex"
   bg "github.com/France-ioi/bebras-guard"
 //  "net/url"
 )
@@ -36,7 +38,8 @@ func handleHint(response BackendResponse, hint string) {
   /* Perform tag replacement */
   for tagIndex, tag := range path {
     if tag == "ClientIp" {
-      path[tagIndex] = response.clientIp
+      ip := net.ParseIP(response.clientIp)
+      path[tagIndex] = hex.EncodeToString(ip)
     }
   }
   /* Build the key and increment the counter */
