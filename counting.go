@@ -57,7 +57,7 @@ func (c *Store) Get(key string) (result *Counter) {
     pull = true
   }
   c.rw.Unlock()
-  if (pull) {
+  if pull {
     c.Pull(key, result)
   }
   return
