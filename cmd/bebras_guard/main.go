@@ -52,7 +52,7 @@ func handleHint(response BackendResponse, hint string) {
     key = "c." + strings.Join(parts, ".")
     store.Incr(key)
   }
-  log.Printf("%s: %s\n", response.clientIp, hint)
+  log.Printf("hint %s %s\n", response.clientIp, hint)
 }
 func handleHints(ch chan BackendResponse) {
   for {
