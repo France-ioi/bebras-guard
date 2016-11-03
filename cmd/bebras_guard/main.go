@@ -11,10 +11,8 @@ import (
   "os/signal"
   "syscall"
   "strings"
-  _ "strconv"
   "encoding/hex"
   bg "github.com/France-ioi/bebras-guard"
-//  "net/url"
 )
 
 type BackendResponse struct {
