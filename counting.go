@@ -8,6 +8,7 @@ import (
   "time"
   "sync/atomic"
   "math"
+  _ "log"
 )
 
 type Counter struct {
@@ -109,13 +110,15 @@ func (c *Store) Push(key string, counter *Counter) {
 }
 
 func (c *Store) Trim(ratio float64) {
-  var target int = int(math.Floor(float64(c.lru.MaxEntries) * (1.0 - ratio)))
-  if (target > 0 && target < c.lru.MaxEntries) {
-    c.rw.Lock()
-    defer c.rw.Unlock()
-    for c.lru.Len() > target {
-      c.lru.RemoveOldest()
-    }
+  var targetLen int = int(math.Floor(float64(c.lru.Len()) * (1 - ratio)))
+  if (targetLen < 0) {
+    // Ignore a trim by a negative ratio.
+    return
+  }
+  c.rw.Lock()
+  defer c.rw.Unlock()
+  for c.lru.Len() > targetLen {
+    c.lru.RemoveOldest()
   }
   return
 }
