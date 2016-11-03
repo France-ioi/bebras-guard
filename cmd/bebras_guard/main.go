@@ -143,25 +143,21 @@ func main() {
   go handleHints(store, hintsChannel)
 
   /* Select the backend transport and director. */
-  var proxyDirector func (req *http.Request)
   var backendTransport http.RoundTripper
+  var backendHost string
   forceHttpHost := os.Getenv("FORCE_HTTP_HOST")
   if backendSocket := os.Getenv("BACKEND_SOCKET"); backendSocket != "" {
     backendTransport = bg.FixedUnixTransport(backendSocket)
-    proxyDirector = func (req *http.Request) {
-      if forceHttpHost != "" {
-        req.Host = forceHttpHost
-      }
-    }
+    backendHost = "unix:" + backendSocket // (ignored)
   } else {
     backendTransport = http.DefaultTransport
-    backendHost := os.Getenv("BACKEND_HOST")
-    proxyDirector = func (req *http.Request) {
-      req.URL.Scheme = "http"
-      req.URL.Host = backendHost
-      if forceHttpHost != "" {
-        req.Host = forceHttpHost
-      }
+    backendHost = os.Getenv("BACKEND_HOST")
+  }
+  proxyDirector := func (req *http.Request) {
+    req.URL.Scheme = "http"
+    req.URL.Host = backendHost
+    if forceHttpHost != "" {
+      req.Host = forceHttpHost
     }
   }
 
