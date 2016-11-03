@@ -87,12 +87,6 @@ func (t ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err er
   return
 }
 
-func proxyDirector(req *http.Request) {
-  // req.URL.Scheme = "http"
-  // req.URL.Host = "127.0.0.1:8001"
-  // req.Host = "concours.castor-informatique.fr"
-}
-
 //
 // Main
 //
@@ -162,12 +156,28 @@ func main() {
   hintsChannel := make(chan BackendResponse, responseQueueSize)
   go handleHints(hintsChannel)
 
-  /* Select the backend transport. */
+  /* Select the backend transport and director. */
+  var proxyDirector func (req *http.Request)
   var backendTransport http.RoundTripper
+  forceHttpHost := os.Getenv("FOCRCE_HTTP_HOST")
   if backendSocket := os.Getenv("BACKEND_SOCKET"); backendSocket != "" {
     backendTransport = bg.FixedUnixTransport(backendSocket)
+    proxyDirector = func (req *http.Request) {
+      if forceHttpHost != "" {
+        req.Host = forceHttpHost
+      }
+    }
   } else {
     backendTransport = http.DefaultTransport
+    backendHost := os.Getenv("BACKEND_HOST")
+    proxyDirector = func (req *http.Request) {
+      req.URL.Scheme = "http"
+      req.URL.Host = backendHost
+      if forceHttpHost != "" {
+        req.Host = forceHttpHost
+      }
+      req.Host = "concours.castor-informatique.fr"
+    }
   }
 
   /* Start the reverse proxy. */
