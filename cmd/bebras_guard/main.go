@@ -29,7 +29,7 @@ type BackendResponse struct {
 
 type ResponseHandler struct {
   redis   *redis.Client
-  counters *bg.Store
+  counters *bg.CounterCache
 }
 
 type TagSet map[string]struct{}
@@ -154,8 +154,8 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
 // Main
 //
 
-func LoadStoreConfig(c *bg.ConfigStore) (bg.StoreConfig) {
-  s := bg.NewStoreConfig()
+func LoadCounterCacheConfig(c *bg.ConfigStore) (bg.CounterCacheConfig) {
+  s := bg.NewCounterCacheConfig()
   c.GetInt("counters.local_cache_size", &s.LocalCacheSize)
   c.GetInt("counters.ttl", &s.CounterTtl)
   c.GetInt64("counters.local_maximum", &s.LocalMaximum)
@@ -186,16 +186,16 @@ func main() {
     redisAddr = "127.0.0.1:6379"
   }
   redisClient := redis.NewClient(&redis.Options{
-      Addr:     redisAddr,
-      Password: "",
-      DB:       0,
+    Addr:     redisAddr,
+    Password: "",
+    DB:       0,
   })
 
   config := bg.NewConfigStore(redisClient)
 
-  /* Build and configure the counter store. */
-  var store *bg.Store = bg.NewCounterStore(redisClient)
-  store.Configure(LoadStoreConfig(config))
+  /* Build and configure the counter cache. */
+  var counterCache *bg.CounterCache = bg.NewCounterCache(redisClient)
+  counterCache.Configure(LoadCounterCacheConfig(config))
 
   /* Build and configure the action cache. */
   var actionCache *bg.ActionCache = bg.NewActionCache(redisClient)
@@ -207,20 +207,20 @@ func main() {
     for {
       select {
       case <-reconfigTicker.C:
-        store.Configure(LoadStoreConfig(config))
+        counterCache.Configure(LoadCounterCacheConfig(config))
         actionCache.Configure(LoadActionCacheConfig(config))
       }
     }
   }()
 
-  /* Add signal handlers to flush the store on exit. */
+  /* Add signal handlers to flush the counter cache on exit. */
   quitChannel := make(chan os.Signal, 1)
   signal.Notify(quitChannel, syscall.SIGINT)  // Ctrl-C.
   signal.Notify(quitChannel, syscall.SIGHUP)  // runit graceful shutdown
   go func(){
     <-quitChannel
-    log.Printf("flushing store...")
-    store.Trim(1)
+    log.Printf("flushing counters...")
+    counterCache.Trim(1)
     log.Printf(" done\n")
     os.Exit(0)
   }()
@@ -231,7 +231,7 @@ func main() {
     responseQueueSize = int(tempInt)
   }
   responseChannel := make(chan BackendResponse, responseQueueSize)
-  responseHandler := ResponseHandler{redis: redisClient, counters: store}
+  responseHandler := ResponseHandler{redis: redisClient, counters: counterCache}
   go responseHandler.Run(responseChannel)
 
   /* Select the backend transport and director. */

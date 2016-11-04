@@ -44,9 +44,6 @@ type Action struct {
   ReloadTime int64
 }
 
-var blockMsg map[bool]string = map[bool]string{true: "block", false: "-"}
-var quickMsg map[bool]string = map[bool]string{true: "quick", false: "-"}
-var staleMsg map[bool]string = map[bool]string{true: "stale", false: "-"}
 
 /* Returns the action associated with the given key. */
 func (this *ActionCache) Get(key string) (result *Action) {

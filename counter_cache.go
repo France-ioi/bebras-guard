@@ -10,7 +10,7 @@ import (
   "math"
 )
 
-type StoreConfig struct {
+type CounterCacheConfig struct {
 
   // Size of the local LRU cache.
   LocalCacheSize int
@@ -39,8 +39,8 @@ type StoreConfig struct {
 }
 
 /* Returns default Config. */
-func NewStoreConfig() (StoreConfig) {
-  return StoreConfig{
+func NewCounterCacheConfig() (CounterCacheConfig) {
+  return CounterCacheConfig{
     LocalCacheSize: 65536,
     CounterTtl: 3600,
     LocalMaximum: 100,
@@ -52,7 +52,7 @@ func NewStoreConfig() (StoreConfig) {
   }
 }
 
-type Store struct {
+type CounterCache struct {
   counterTtl time.Duration
   localMaximum int64
   reloadInterval int64
@@ -73,79 +73,79 @@ type Counter struct {
   ReloadTime int64
 }
 
-func (c Counter) Value() (result int64) {
-  return c.Local + c.Shared;
+func (this Counter) Value() (result int64) {
+  return this.Local + this.Shared;
 }
 
-/* Returns the counter associated with the given key from the local store,
+/* Returns the counter associated with the given key from the local cache,
    or nil if there is no local counter. */
-func (c *Store) FastGet(key string) (result *Counter) {
-  c.rw.RLock();
-  if val, hit := c.lru.Get(key); hit {
+func (this *CounterCache) FastGet(key string) (result *Counter) {
+  this.rw.RLock();
+  if val, hit := this.lru.Get(key); hit {
     result = val.(*Counter)
   } else {
     result = nil
   }
-  c.rw.RUnlock()
+  this.rw.RUnlock()
   return
 }
 
 /* Returns the counter associated with the given key.
    The remote store may be queried to update the shared part of the counter. */
-func (c *Store) Get(key string) (result *Counter) {
+func (this *CounterCache) Get(key string) (result *Counter) {
   /* Add the new counter to the cache if missing */
-  var pull bool
-  if c.debug {
+  var stale bool
+  if this.debug {
     fmt.Printf("get %s\n", key)
   }
-  c.rw.Lock()
-  if val, hit := c.lru.Get(key); hit {
+  this.rw.Lock()
+  if val, hit := this.lru.Get(key); hit {
     result = val.(*Counter)
-    pull = result.ReloadTime <= time.Now().Unix()
-    if c.debug {
-      fmt.Printf("got %s (%d+%d) %s\n", key, result.Shared, result.Local, pull)
+    stale = result.ReloadTime <= time.Now().Unix()
+    if this.debug {
+      fmt.Printf("got %s (%d+%d) %s\n", key, result.Shared, result.Local, staleMsg[stale])
     }
   } else {
     result = &Counter{Local: 0, Shared: 0, ReloadTime: time.Now().Unix()}
-    c.lru.Add(key, result)
-    if c.debug {
+    this.lru.Add(key, result)
+    if this.debug {
       fmt.Printf("new %s\n", key)
     }
-    pull = true
+    stale = true
   }
-  c.rw.Unlock()
-  if pull {
-    c.Pull(key, result)
+  this.rw.Unlock()
+  if stale {
+    this.pull(key, result)
   }
   return
 }
 
 /* Atomically increment the local part of a counter. */
-func (c *Store) Incr(key string) {
+func (this *CounterCache) Incr(key string) {
   var counter *Counter
-  c.rw.Lock()
-  if val, hit := c.lru.Get(key); hit {
+  this.rw.Lock()
+  if val, hit := this.lru.Get(key); hit {
     counter = val.(*Counter)
     local := atomic.AddInt64(&counter.Local, 1)
-    if local > c.localMaximum {
-      c.Push(key, counter)
+    if local > this.localMaximum {
+      this.push(key, counter)
     }
   } else {
-    counter = &Counter{Local: 1, Shared: 0, ReloadTime: time.Now().Unix() + c.reloadInterval}
-    c.lru.Add(key, counter)
+    counter = &Counter{Local: 1, Shared: 0, ReloadTime: time.Now().Unix() + this.reloadInterval}
+    this.lru.Add(key, counter)
   }
-  c.rw.Unlock()
+  this.rw.Unlock()
   return
 }
 
 /* Updates the shared part of the given counter from the remote store. */
-func (c *Store) Pull(key string, counter *Counter) {
+func (this *CounterCache) pull(key string, counter *Counter) {
   var value int64
   var err error
-  if value, err = c.rc.Get(key).Int64(); err == nil {
+  if value, err = this.rc.Get(key).Int64(); err == nil {
     counter.Shared = value
-    counter.ReloadTime = time.Now().Unix() + c.reloadInterval
-    if c.debug {
+    counter.ReloadTime = time.Now().Unix() + this.reloadInterval
+    if this.debug {
       fmt.Printf("pulled %s (%d+%d)\n", key, counter.Shared, counter.Local)
     }
   }
@@ -153,22 +153,22 @@ func (c *Store) Pull(key string, counter *Counter) {
 
 /* Pushes the local part of the counter to the remote store.
    The local part is also added to the shared part, and cleared. */
-func (c *Store) Push(key string, counter *Counter) {
+func (this *CounterCache) push(key string, counter *Counter) {
   if (counter.Local != 0) {
     var err error
-    if err = c.rc.IncrBy(key, counter.Local).Err(); err != nil {
-      if !c.quiet {
+    if err = this.rc.IncrBy(key, counter.Local).Err(); err != nil {
+      if !this.quiet {
         fmt.Printf("IncrBy %d failed on %s\n", counter.Local, key)
       }
       return
     }
-    if err = c.rc.Expire(key, c.counterTtl).Err(); err != nil {
-      if !c.quiet {
+    if err = this.rc.Expire(key, this.counterTtl).Err(); err != nil {
+      if !this.quiet {
         fmt.Printf("Expire failed on %s\n", key)
       }
       return
     }
-    if c.debug {
+    if this.debug {
       fmt.Printf("pushed %s (%d+%d)\n", key, counter.Shared, counter.Local)
     }
     counter.Shared += counter.Local
@@ -176,84 +176,84 @@ func (c *Store) Push(key string, counter *Counter) {
   }
 }
 
-func (c *Store) Trim(ratio float64) {
-  var toFlush int = int(math.Floor(float64(c.lru.MaxEntries) * ratio))
-  var targetLen int = c.lru.Len() - toFlush
+func (this *CounterCache) Trim(ratio float64) {
+  var toFlush int = int(math.Floor(float64(this.lru.MaxEntries) * ratio))
+  var targetLen int = this.lru.Len() - toFlush
   if (targetLen < 0) {
     targetLen = 0
   }
-  c.rw.Lock()
-  defer c.rw.Unlock()
-  c.trim(targetLen);
+  this.rw.Lock()
+  defer this.rw.Unlock()
+  this.trim(targetLen);
   return
 }
 
 /* Trim LRU cache to given size. Must be called with the mutex locked. */
-func (c *Store) trim(targetLen int) {
-  for c.lru.Len() > targetLen {
-    c.lru.RemoveOldest()
+func (this *CounterCache) trim(targetLen int) {
+  for this.lru.Len() > targetLen {
+    this.lru.RemoveOldest()
   }
 }
 
-func (c *Store) resize(maxEntries int) {
+func (this *CounterCache) resize(maxEntries int) {
   /* Flush the old cache. */
-  if c.lru != nil {
-    c.trim(0);
+  if this.lru != nil {
+    this.trim(0);
   }
   /* Allocate the new cache. */
-  c.lru = &lru.Cache{
+  this.lru = &lru.Cache{
     MaxEntries: maxEntries,
     OnEvicted: func (key lru.Key, value interface{}) {
       var strKey = key.(string)
       var counter = value.(*Counter)
-      c.Push(strKey, counter);
+      this.push(strKey, counter);
       return
     },
   }
 }
 
-/* Updates the store's configuration. */
-func (c *Store) Configure(config StoreConfig) {
-  c.rw.Lock()
-  defer c.rw.Unlock()
-  c.counterTtl = time.Duration(config.CounterTtl) * time.Second
-  c.localMaximum = config.LocalMaximum
-  c.reloadInterval = config.ReloadInterval
-  c.flushRatio = config.FlushRatio
-  c.debug = config.Debug
-  c.quiet = config.Quiet
+/* Updates the cache's configuration. */
+func (this *CounterCache) Configure(config CounterCacheConfig) {
+  this.rw.Lock()
+  defer this.rw.Unlock()
+  this.counterTtl = time.Duration(config.CounterTtl) * time.Second
+  this.localMaximum = config.LocalMaximum
+  this.reloadInterval = config.ReloadInterval
+  this.flushRatio = config.FlushRatio
+  this.debug = config.Debug
+  this.quiet = config.Quiet
   /* Resize the cache. */
-  if c.lru == nil || c.lru.MaxEntries != config.LocalCacheSize {
-    c.resize(config.LocalCacheSize)
+  if this.lru == nil || this.lru.MaxEntries != config.LocalCacheSize {
+    this.resize(config.LocalCacheSize)
   }
   /* Reset the ticker interval. */
-  if config.FlushInterval != c.flushInterval {
-    c.flushInterval = config.FlushInterval
-    if c.ft != nil {
+  if config.FlushInterval != this.flushInterval {
+    this.flushInterval = config.FlushInterval
+    if this.ft != nil {
       /* Signal the old goroutine to stop. */
-      c.ft.Stop()
-      c.ft = nil
-      c.ftStop <- true
+      this.ft.Stop()
+      this.ft = nil
+      this.ftStop <- true
     }
     if config.FlushInterval > 0 {
       /* Start a ticker and flush goroutine. */
-      c.ft = time.NewTicker(time.Duration(config.FlushInterval) * time.Second)
+      this.ft = time.NewTicker(time.Duration(config.FlushInterval) * time.Second)
       go func(ticker *time.Ticker) {
         for {
           select {
           case <-ticker.C:
-            c.Trim(c.flushRatio)
-          case <-c.ftStop:
+            this.Trim(this.flushRatio)
+          case <-this.ftStop:
             return
           }
         }
-      }(c.ft)
+      }(this.ft)
     }
   }
 }
 
-func NewCounterStore(redisClient *redis.Client) (*Store) {
-  return &Store{
+func NewCounterCache(redisClient *redis.Client) (*CounterCache) {
+  return &CounterCache{
     rc: redisClient,
     ftStop: make(chan bool, 1),
   }
