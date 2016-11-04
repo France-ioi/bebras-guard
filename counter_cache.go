@@ -61,7 +61,7 @@ type CounterCache struct {
   debug bool
   quiet bool
   rc  *redis.Client
-  rw  sync.RWMutex
+  m   sync.Mutex
   lru *lru.Cache
   ft  *time.Ticker
   ftStop chan bool
@@ -77,19 +77,6 @@ func (this Counter) Value() (result int64) {
   return this.Local + this.Shared;
 }
 
-/* Returns the counter associated with the given key from the local cache,
-   or nil if there is no local counter. */
-func (this *CounterCache) FastGet(key string) (result *Counter) {
-  this.rw.RLock();
-  if val, hit := this.lru.Get(key); hit {
-    result = val.(*Counter)
-  } else {
-    result = nil
-  }
-  this.rw.RUnlock()
-  return
-}
-
 /* Returns the counter associated with the given key.
    The remote store may be queried to update the shared part of the counter. */
 func (this *CounterCache) Get(key string) (result *Counter) {
@@ -98,7 +85,7 @@ func (this *CounterCache) Get(key string) (result *Counter) {
   if this.debug {
     fmt.Printf("get %s\n", key)
   }
-  this.rw.Lock()
+  this.m.Lock()
   if val, hit := this.lru.Get(key); hit {
     result = val.(*Counter)
     stale = result.ReloadTime <= time.Now().Unix()
@@ -113,7 +100,7 @@ func (this *CounterCache) Get(key string) (result *Counter) {
     }
     stale = true
   }
-  this.rw.Unlock()
+  this.m.Unlock()
   if stale {
     this.pull(key, result)
   }
@@ -123,7 +110,7 @@ func (this *CounterCache) Get(key string) (result *Counter) {
 /* Atomically increment the local part of a counter. */
 func (this *CounterCache) Incr(key string) {
   var counter *Counter
-  this.rw.Lock()
+  this.m.Lock()
   if val, hit := this.lru.Get(key); hit {
     counter = val.(*Counter)
     local := atomic.AddInt64(&counter.Local, 1)
@@ -134,7 +121,7 @@ func (this *CounterCache) Incr(key string) {
     counter = &Counter{Local: 1, Shared: 0, ReloadTime: time.Now().Unix() + this.reloadInterval}
     this.lru.Add(key, counter)
   }
-  this.rw.Unlock()
+  this.m.Unlock()
   return
 }
 
@@ -182,8 +169,8 @@ func (this *CounterCache) Trim(ratio float64) {
   if (targetLen < 0) {
     targetLen = 0
   }
-  this.rw.Lock()
-  defer this.rw.Unlock()
+  this.m.Lock()
+  defer this.m.Unlock()
   this.trim(targetLen);
   return
 }
@@ -214,8 +201,8 @@ func (this *CounterCache) resize(maxEntries int) {
 
 /* Updates the cache's configuration. */
 func (this *CounterCache) Configure(config CounterCacheConfig) {
-  this.rw.Lock()
-  defer this.rw.Unlock()
+  this.m.Lock()
+  defer this.m.Unlock()
   this.counterTtl = time.Duration(config.CounterTtl) * time.Second
   this.localMaximum = config.LocalMaximum
   this.reloadInterval = config.ReloadInterval

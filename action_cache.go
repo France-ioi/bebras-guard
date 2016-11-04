@@ -34,7 +34,7 @@ type ActionCache struct {
   reloadInterval int64
   debug bool
   rc *redis.Client
-  rw sync.RWMutex
+  m sync.Mutex
   lru *lru.Cache
 }
 
@@ -52,7 +52,7 @@ func (this *ActionCache) Get(key string) (result *Action) {
   if this.debug {
     fmt.Printf("get action %s\n", key)
   }
-  this.rw.Lock()
+  this.m.Lock()
   if val, hit := this.lru.Get(key); hit {
     result = val.(*Action)
     stale = result.ReloadTime <= time.Now().Unix()
@@ -68,7 +68,7 @@ func (this *ActionCache) Get(key string) (result *Action) {
     }
     stale = true
   }
-  this.rw.Unlock()
+  this.m.Unlock()
   if stale {
     this.pull(key, result)
   }
@@ -103,8 +103,8 @@ func (this *ActionCache) pull(key string, action *Action) {
 
 /* Updates the cache's configuration. */
 func (this *ActionCache) Configure(config ActionCacheConfig) {
-  this.rw.Lock()
-  defer this.rw.Unlock()
+  this.m.Lock()
+  defer this.m.Unlock()
   this.reloadInterval = config.ReloadInterval
   this.debug = config.Debug
   if config.MaxEntries > 0 {
