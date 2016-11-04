@@ -30,6 +30,7 @@ type BackendResponse struct {
 type ResponseHandler struct {
   redis   *redis.Client
   counters *bg.CounterCache
+  activity *bg.ActivityCache
 }
 
 type TagSet map[string]struct{}
@@ -80,7 +81,7 @@ func (this ResponseHandler) Run(ch chan BackendResponse) {
     for _, hint := range hints {
       this.handleHint(clientIpTag, tagSet, unquote(hint))
     }
-    }
+    this.activity.Bump(clientIpTag)
   }
 }
 
@@ -167,6 +168,14 @@ func LoadCounterCacheConfig(c *bg.ConfigStore) (bg.CounterCacheConfig) {
   return s
 }
 
+func LoadActivityCacheConfig(c *bg.ConfigStore) (out bg.ActivityCacheConfig) {
+  out = bg.NewActivityCacheConfig()
+  c.GetInt("activity_cache.max_entries", &out.MaxEntries)
+  c.GetInt64("activity_cache.threshold", &out.Threshold)
+  c.GetBool("activity_cache.debug", &out.Debug)
+  return
+}
+
 func LoadActionCacheConfig(c *bg.ConfigStore) (out bg.ActionCacheConfig) {
   out = bg.NewActionCacheConfig()
   c.GetInt("action_cache.max_entries", &out.MaxEntries)
@@ -193,13 +202,16 @@ func main() {
 
   config := bg.NewConfigStore(redisClient)
 
-  /* Build and configure the counter cache. */
+  /* Build and configure the caches. */
   var counterCache *bg.CounterCache = bg.NewCounterCache(redisClient)
-  counterCache.Configure(LoadCounterCacheConfig(config))
-
-  /* Build and configure the action cache. */
+  var activityCache *bg.ActivityCache = bg.NewActivityCache(redisClient)
   var actionCache *bg.ActionCache = bg.NewActionCache(redisClient)
-  actionCache.Configure(LoadActionCacheConfig(config))
+  reconfigure := func() {
+    counterCache.Configure(LoadCounterCacheConfig(config))
+    activityCache.Configure(LoadActivityCacheConfig(config))
+    actionCache.Configure(LoadActionCacheConfig(config))
+  }
+  reconfigure()
 
   /* Reload the configuration every 60 seconds */
   reconfigTicker := time.NewTicker(60 * time.Second)
@@ -207,8 +219,7 @@ func main() {
     for {
       select {
       case <-reconfigTicker.C:
-        counterCache.Configure(LoadCounterCacheConfig(config))
-        actionCache.Configure(LoadActionCacheConfig(config))
+        reconfigure()
       }
     }
   }()
@@ -231,7 +242,11 @@ func main() {
     responseQueueSize = int(tempInt)
   }
   responseChannel := make(chan BackendResponse, responseQueueSize)
-  responseHandler := ResponseHandler{redis: redisClient, counters: counterCache}
+  responseHandler := ResponseHandler{
+    redis: redisClient,
+    counters: counterCache,
+    activity: activityCache,
+  }
   go responseHandler.Run(responseChannel)
 
   /* Select the backend transport and director. */
