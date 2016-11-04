@@ -201,6 +201,7 @@ func main() {
     Addr:     redisAddr,
     Password: "",
     DB:       0,
+    DialTimeout: 1 * time.Second,
   })
 
   config := bg.NewConfigStore(redisClient)
