@@ -82,6 +82,9 @@ func (this ResponseHandler) Run(ch chan BackendResponse) {
       this.handleHint(clientIpTag, tagSet, unquote(hint))
     }
     this.activity.Bump(clientIpTag)
+    for tag, _ := range tagSet {
+      this.activity.Bump(tag)
+    }
   }
 }
 
