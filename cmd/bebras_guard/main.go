@@ -11,18 +11,30 @@ import (
   "os/signal"
   "syscall"
   "strings"
+  "unicode"
+  "unicode/utf8"
   "encoding/hex"
+  "bytes"
+  "time"
   bg "github.com/France-ioi/bebras-guard"
 )
 
 type BackendResponse struct {
-  clientIp string
+  realIp string
+  hexIp string
   hints string
 }
 
 /* Goroutine for handling hints. */
 
-func handleHint(store *bg.Store, response BackendResponse, hint string) {
+type ResponseHandler struct {
+  redis   *redis.Client
+  counters *bg.Store
+}
+
+type TagSet map[string]struct{}
+
+func (this ResponseHandler) handleHint(clientIpTag string, tagSet TagSet, hint string) {
   /* Split the hint as path:name */
   parts := strings.Split(hint, `:`)
   if len(parts) > 2 {
@@ -33,66 +45,108 @@ func handleHint(store *bg.Store, response BackendResponse, hint string) {
   /* Perform tag replacement */
   for tagIndex, tag := range path {
     if tag == "ClientIp" || tag == "ClientIP" {
-      ip := net.ParseIP(response.clientIp)
-      /* ParseIP always returns an IPv6 address, try to convert to IPv4 */
-      if ip4 := ip.To4(); ip4 != nil {
-        ip = ip4
+      path[tagIndex] = clientIpTag
+    } else {
+      r, _ := utf8.DecodeRuneInString(tag)
+      if (unicode.IsUpper(r)) {
+        tagSet[tag] = struct{}{}
       }
-      path[tagIndex] = "IP(" + hex.EncodeToString(ip) + ")"
     }
   }
   /* Build the key and increment the counter */
   parts[0] = strings.Join(path, ".")
   key := "c." + strings.Join(parts, ".")
-  store.Get(key)
-  store.Incr(key)
+  this.counters.Get(key)
+  this.counters.Incr(key)
   /* If a counter name is given, also increment the "total" counter. */
   if len(parts) == 2 {
     parts[1] = "total"
     key = "c." + strings.Join(parts, ".")
-    store.Get(key)
-    store.Incr(key)
+    this.counters.Get(key)
+    this.counters.Incr(key)
   }
-  log.Printf("hint %s %s\n", response.clientIp, hint)
 }
 
-func handleHints(store *bg.Store, ch chan BackendResponse) {
+func unquote(value string) (result string) {
+  return strings.Trim(value, `"`)
+}
+
+func (this ResponseHandler) Run(ch chan BackendResponse) {
   for {
     response := <-ch
+    clientIpTag := "IP(" + response.hexIp + ")"
+    tagSet := make(TagSet)
     hints := strings.Fields(response.hints)
     for _, hint := range hints {
-      /* Unquote */
-      hint = strings.Trim(hint, `"`)
-      handleHint(store, response, hint)
+      this.handleHint(clientIpTag, tagSet, unquote(hint))
+    }
     }
   }
+}
+
+// Helper class to send static body responses
+
+type ClosingBuffer struct {
+  *bytes.Buffer
+}
+
+func (cb *ClosingBuffer) Close() (error) {
+  return nil
 }
 
 // Reverse proxy
 
 type ProxyTransport struct {
-  hintsChannel chan BackendResponse
+  responseChannel chan BackendResponse
   backendTransport http.RoundTripper
+  actions *bg.ActionCache
 }
 
-func (t ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err error) {
-  res, err = t.backendTransport.RoundTrip(req)
+func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err error) {
+  /* Normally we run behind a load-balancer which will set X-Real-IP. */
+  realIp := req.Header.Get("X-Real-IP")
+  if realIp == "" {
+    /* When testing locally, the X-Real-IP header is missing. */
+    colonIndex := strings.LastIndex(req.RemoteAddr, `:`)
+    realIp = req.RemoteAddr[0:colonIndex]
+    realIp = strings.Trim(realIp, `[]`)
+  }
+  /* Convert the IP-address to HEX representation for use in keys.
+     ParseIP always returns an IPv6 address, try to convert to IPv4. */
+  parsedIp := net.ParseIP(realIp)
+  if parsedIp4 := parsedIp.To4(); parsedIp4 != nil {
+    parsedIp = parsedIp4
+  }
+  hexIp := hex.EncodeToString(parsedIp)
+  /* Look up in the action cache */
+  action := this.actions.Get("a." + hexIp)
+  if action.Block {
+    res = &http.Response{
+      Status: "429 Too Many Requests",
+      StatusCode: 429,
+      Proto: "HTTP 1.1",
+      ProtoMajor: 1,
+      ProtoMinor: 1,
+      Header: make(http.Header),
+      Body: &ClosingBuffer{bytes.NewBufferString("too many requests")},
+    }
+    res.Header.Set("Content-Type", "text/plain")
+    err = nil
+    return
+  }
+  /* Pass the request to the backend */
+  res, err = this.backendTransport.RoundTrip(req)
+  // res.Header.Set("X-Guarded", "true")
   if err != nil {
     return
   }
-  hints := res.Header.Get("X-Backend-Hints")
-  if hints != "" {
-    /* Normally we run behind a load-balancer which will set X-Real-IP. */
-    realIp := req.Header.Get("X-Real-IP")
-    if realIp == "" {
-      /* When testing locally, the X-Real-IP header is missing. */
-      colonIndex := strings.LastIndex(req.RemoteAddr, `:`)
-      realIp = req.RemoteAddr[0:colonIndex]
-      realIp = strings.Trim(realIp, `[]`)
+  /* Process the hints header, unless the Quick flag is set */
+  if !action.Quick {
+    hints := res.Header.Get("X-Backend-Hints")
+    if hints != "" {
+      this.responseChannel <- BackendResponse{realIp, hexIp, hints}
     }
-    t.hintsChannel <- BackendResponse{realIp, hints}
   }
-  res.Header.Set("X-Guarded", "true")
   return
 }
 
@@ -100,7 +154,6 @@ func (t ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err er
 // Main
 //
 
-/* Loads and returns Config from redis. */
 func LoadStoreConfig(c *bg.ConfigStore) (bg.StoreConfig) {
   s := bg.NewStoreConfig()
   c.GetInt("counters.local_cache_size", &s.LocalCacheSize)
@@ -112,6 +165,14 @@ func LoadStoreConfig(c *bg.ConfigStore) (bg.StoreConfig) {
   c.GetBool("counters.debug", &s.Debug)
   c.GetBool("counters.quiet", &s.Quiet)
   return s
+}
+
+func LoadActionCacheConfig(c *bg.ConfigStore) (out bg.ActionCacheConfig) {
+  out = bg.NewActionCacheConfig()
+  c.GetInt("action_cache.max_entries", &out.MaxEntries)
+  c.GetInt64("action_cache.reload_interval", &out.ReloadInterval)
+  c.GetBool("action_cache.debug", &out.Debug)
+  return
 }
 
 func main() {
@@ -136,6 +197,22 @@ func main() {
   var store *bg.Store = bg.NewCounterStore(redisClient)
   store.Configure(LoadStoreConfig(config))
 
+  /* Build and configure the action cache. */
+  var actionCache *bg.ActionCache = bg.NewActionCache(redisClient)
+  actionCache.Configure(LoadActionCacheConfig(config))
+
+  /* Reload the configuration every 60 seconds */
+  reconfigTicker := time.NewTicker(60 * time.Second)
+  go func() {
+    for {
+      select {
+      case <-reconfigTicker.C:
+        store.Configure(LoadStoreConfig(config))
+        actionCache.Configure(LoadActionCacheConfig(config))
+      }
+    }
+  }()
+
   /* Add signal handlers to flush the store on exit. */
   quitChannel := make(chan os.Signal, 1)
   signal.Notify(quitChannel, syscall.SIGINT)  // Ctrl-C.
@@ -153,8 +230,9 @@ func main() {
   if tempInt, err = redisClient.Get("config.response_queue_size").Int64(); err != nil {
     responseQueueSize = int(tempInt)
   }
-  hintsChannel := make(chan BackendResponse, responseQueueSize)
-  go handleHints(store, hintsChannel)
+  responseChannel := make(chan BackendResponse, responseQueueSize)
+  responseHandler := ResponseHandler{redis: redisClient, counters: store}
+  go responseHandler.Run(responseChannel)
 
   /* Select the backend transport and director. */
   var backendTransport http.RoundTripper
@@ -177,8 +255,9 @@ func main() {
 
   /* Start the reverse proxy. */
   proxyTransport := &ProxyTransport{
-    hintsChannel: hintsChannel,
+    responseChannel: responseChannel,
     backendTransport: backendTransport,
+    actions: actionCache,
   }
   proxy := &httputil.ReverseProxy{
     Director: proxyDirector,
