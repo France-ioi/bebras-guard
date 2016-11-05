@@ -146,7 +146,7 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   }
   /* IP request */
   if req.URL.Path == "/ip" {
-    res = plainTextResponse(200, realIp)
+    res = plainTextResponse(200, req.Header.Get("X-Forwarded-For"))
     err = nil
     return
   }
