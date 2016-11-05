@@ -128,7 +128,7 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   // fmt.Printf("X-Real-IP: %s\n", realIp)
   if realIp == "" {
     xff := strings.Split(req.Header.Get("X-Forwarded-For"), ", ")
-    fmt.Printf("X-Forwarded-For: %s %d\n", xff, this.proxyDepth)
+    // fmt.Printf("X-Forwarded-For: %s %d\n", xff, this.proxyDepth)
     nProxies := len(xff) - 1
     if nProxies < this.proxyDepth {
       colonIndex := strings.LastIndex(req.RemoteAddr, `:`)
