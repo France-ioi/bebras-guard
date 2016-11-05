@@ -11,6 +11,7 @@ import (
   "os/signal"
   "syscall"
   "strings"
+  "strconv"
   "unicode"
   "unicode/utf8"
   "encoding/hex"
@@ -102,6 +103,7 @@ func (cb *ClosingBuffer) Close() (error) {
 // Reverse proxy
 
 type ProxyTransport struct {
+  proxyDepth int
   responseChannel chan BackendResponse
   backendTransport http.RoundTripper
   actions *bg.ActionCache
@@ -122,13 +124,19 @@ func plainTextResponse(statusCode int, body string) (*http.Response) {
 }
 
 func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err error) {
-  /* Normally we run behind a load-balancer which will set X-Real-IP. */
-  realIp := req.Header.Get("X-Real-IP")
+  var realIp string = req.Header.Get("X-Real-IP")
+  // fmt.Printf("X-Real-IP: %s\n", realIp)
   if realIp == "" {
-    /* When testing locally, the X-Real-IP header is missing. */
-    colonIndex := strings.LastIndex(req.RemoteAddr, `:`)
-    realIp = req.RemoteAddr[0:colonIndex]
-    realIp = strings.Trim(realIp, `[]`)
+    xff := strings.Split(req.Header.Get("X-Forwarded-For"), ", ")
+    fmt.Printf("X-Forwarded-For: %s %d\n", xff, this.proxyDepth)
+    nProxies := len(xff) - 1
+    if nProxies < this.proxyDepth {
+      colonIndex := strings.LastIndex(req.RemoteAddr, `:`)
+      realIp = req.RemoteAddr[0:colonIndex]
+      realIp = strings.Trim(realIp, `[]`)
+    } else {
+      realIp = xff[nProxies - this.proxyDepth]
+    }
   }
   /* Convert the IP-address to HEX representation for use in keys.
      ParseIP always returns an IPv6 address, try to convert to IPv4. */
@@ -146,7 +154,7 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   }
   /* IP request */
   if req.URL.Path == "/ip" {
-    res = plainTextResponse(200, req.Header.Get("X-Forwarded-For"))
+    res = plainTextResponse(200, realIp)
     err = nil
     return
   }
@@ -285,7 +293,10 @@ func main() {
   }
 
   /* Start the reverse proxy. */
+  var proxyDepth int
+  proxyDepth, _ = strconv.Atoi(os.Getenv("PROXY_DEPTH"))
   proxyTransport := &ProxyTransport{
+    proxyDepth: proxyDepth,
     responseChannel: responseChannel,
     backendTransport: backendTransport,
     actions: actionCache,
