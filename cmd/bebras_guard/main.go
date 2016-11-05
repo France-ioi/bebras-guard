@@ -16,6 +16,7 @@ import (
   "encoding/hex"
   "bytes"
   "time"
+  "fmt"
   bg "github.com/France-ioi/bebras-guard"
 )
 
@@ -106,6 +107,20 @@ type ProxyTransport struct {
   actions *bg.ActionCache
 }
 
+func plainTextResponse(statusCode int, body string) (*http.Response) {
+  res := &http.Response{
+    Proto:      "HTTP/1.1",
+    ProtoMajor: 1,
+    ProtoMinor: 1,
+    Header:     make(http.Header),
+    StatusCode: statusCode,
+    Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+    Body:       &ClosingBuffer{bytes.NewBufferString(body)},
+  }
+  res.Header.Set("Content-Type", "text/plain")
+  return res
+}
+
 func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err error) {
   /* Normally we run behind a load-balancer which will set X-Real-IP. */
   realIp := req.Header.Get("X-Real-IP")
@@ -125,16 +140,7 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   /* Look up in the action cache */
   action := this.actions.Get("a." + hexIp)
   if action.Block {
-    res = &http.Response{
-      Status: "429 Too Many Requests",
-      StatusCode: 429,
-      Proto: "HTTP 1.1",
-      ProtoMajor: 1,
-      ProtoMinor: 1,
-      Header: make(http.Header),
-      Body: &ClosingBuffer{bytes.NewBufferString("too many requests")},
-    }
-    res.Header.Set("Content-Type", "text/plain")
+    res = plainTextResponse(429, "too many requests")
     err = nil
     return
   }
