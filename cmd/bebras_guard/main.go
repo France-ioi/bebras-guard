@@ -164,7 +164,8 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
     err = nil
     return
   }
-  /* Pass the request to the backend */
+  /* Pass the request to the backend, setting X-Real-IP. */
+  req.Header.Set("X-Real-IP", realIp)
   res, err = this.backendTransport.RoundTrip(req)
   // res.Header.Set("X-Guarded", "true")
   if err != nil {
