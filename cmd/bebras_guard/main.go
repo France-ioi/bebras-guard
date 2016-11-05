@@ -124,18 +124,24 @@ func plainTextResponse(statusCode int, body string) (*http.Response) {
 }
 
 func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err error) {
-  var realIp string = req.Header.Get("X-Real-IP")
-  // fmt.Printf("X-Real-IP: %s\n", realIp)
-  if realIp == "" {
-    xff := strings.Split(req.Header.Get("X-Forwarded-For"), ", ")
-    // fmt.Printf("X-Forwarded-For: %s %d\n", xff, this.proxyDepth)
-    nProxies := len(xff) - 1
-    if nProxies < this.proxyDepth {
+  var realIp string
+  /* Determine the user's real IP address.
+     Use X-Forwarded-For as the first method.
+     There is an extra reverse-proxy layer added by bebras-guard, so when
+     running behind 1 reverse-proxy, set proxyDepth to 2.
+  */
+  xff := strings.Split(req.Header.Get("X-Forwarded-For"), ", ")
+  nProxies := len(xff) - 1
+  if nProxies >= this.proxyDepth {
+    realIp = xff[nProxies - this.proxyDepth]
+  } else {
+    /* Use the value of X-Real-IP if non-empty. */
+    realIp = req.Header.Get("X-Real-IP")
+    if realIp == "" {
+      /* Fall back to remoteAddr. */
       colonIndex := strings.LastIndex(req.RemoteAddr, `:`)
       realIp = req.RemoteAddr[0:colonIndex]
       realIp = strings.Trim(realIp, `[]`)
-    } else {
-      realIp = xff[nProxies - this.proxyDepth]
     }
   }
   /* Convert the IP-address to HEX representation for use in keys.
