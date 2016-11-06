@@ -18,9 +18,18 @@ Environment variables:
 
 Redis keys:
 
-    config.max_counters
-    config.counter_ttl
-    config.local_counter_threshold
-    config.flush_interval
-    config.flush_ratio
     config.response_queue_size
+    config.counters.local_cache_size
+    config.counters.ttl
+    config.counters.local_maximum
+    config.counters.reload_interval
+    config.counters.flush_interval
+    config.counters.flush_ratio
+    config.counters.debug
+    config.counters.quiet
+    config.activity_cache.max_entries
+    config.activity_cache.threshold
+    config.activity_cache.debug
+    config.action_cache.max_entries
+    config.action_cache.reload_interval
+    config.action_cache.debug
