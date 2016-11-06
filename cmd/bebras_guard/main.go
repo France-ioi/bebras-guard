@@ -211,6 +211,8 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
       this.responseChannel <- BackendResponse{realIp, hexIp, hints}
     }
   }
+  /* Hide the X-Backend-Hints header from clients. */
+  res.Header.Del("X-Backend-Hints")
   return
 }
 
