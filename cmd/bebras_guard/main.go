@@ -216,7 +216,6 @@ func LoadActionCacheConfig(c *bg.ConfigStore) (out bg.ActionCacheConfig) {
 
 func main() {
   var err error
-  var tempInt int64
 
   log.Printf("bebras-guard is starting\n")
 
@@ -269,9 +268,7 @@ func main() {
 
   /* Buffer a number of responses without blocking. */
   var responseQueueSize int = 128
-  if tempInt, err = redisClient.Get("config.response_queue_size").Int64(); err != nil {
-    responseQueueSize = int(tempInt)
-  }
+  config.GetInt("response_queue_size", &responseQueueSize)
   responseChannel := make(chan BackendResponse, responseQueueSize)
   responseHandler := ResponseHandler{
     redis: redisClient,
