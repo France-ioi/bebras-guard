@@ -18,6 +18,7 @@ import (
   "bytes"
   "time"
   "fmt"
+  "html"
   bg "github.com/France-ioi/bebras-guard"
 )
 
@@ -107,6 +108,7 @@ type ProxyTransport struct {
   responseChannel chan BackendResponse
   backendTransport http.RoundTripper
   actions *bg.ActionCache
+  fallbackRootUrl string
 }
 
 func plainTextResponse(statusCode int, body string) (*http.Response) {
@@ -120,6 +122,31 @@ func plainTextResponse(statusCode int, body string) (*http.Response) {
     Body:       &ClosingBuffer{bytes.NewBufferString(body)},
   }
   res.Header.Set("Content-Type", "text/plain")
+  return res
+}
+
+func redirectResponse(statusCode int, location string) (*http.Response) {
+  status := fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode));
+  body := fmt.Sprintf(`<HTML>
+  <HEAD>
+    <meta http-equiv="content-type" content="text/html;charset=utf-8">
+    <TITLE>%s</TITLE>
+  </HEAD>
+  <BODY>
+    <H1>%s</H1>
+    <P>The document has moved <A HREF="%s">here</A>.</P>
+  </BODY>
+</HTML>`, status, status, html.EscapeString(location));
+  res := &http.Response{
+    Proto:      "HTTP/1.1",
+    ProtoMajor: 1,
+    ProtoMinor: 1,
+    Header:     make(http.Header),
+    StatusCode: statusCode,
+    Status:     status,
+    Body:       &ClosingBuffer{bytes.NewBufferString(body)},
+  }
+  res.Header.Set("Location", location)
   return res
 }
 
@@ -169,6 +196,12 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   res, err = this.backendTransport.RoundTrip(req)
   // res.Header.Set("X-Guarded", "true")
   if err != nil {
+    /* If the backend returns a 5xx header for the / path. */
+    if this.fallbackRootUrl != "" && req.URL.Path == "/" {
+      res = redirectResponse(302, this.fallbackRootUrl);
+      err = nil;
+      return
+    }
     return
   }
   /* Process the hints header, unless the Quick flag is set */
@@ -304,6 +337,7 @@ func main() {
     responseChannel: responseChannel,
     backendTransport: backendTransport,
     actions: actionCache,
+    fallbackRootUrl: os.Getenv("FALLBACK_ROOT_URL"),
   }
   proxy := &httputil.ReverseProxy{
     Director: proxyDirector,
