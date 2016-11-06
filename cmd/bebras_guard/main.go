@@ -194,7 +194,6 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   /* Pass the request to the backend, setting X-Real-IP. */
   req.Header.Set("X-Real-IP", realIp)
   res, err = this.backendTransport.RoundTrip(req)
-  // res.Header.Set("X-Guarded", "true")
   if err != nil {
     /* If the backend returns a 5xx header for the / path. */
     if this.fallbackRootUrl != "" && req.URL.Path == "/" {
@@ -204,6 +203,7 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
     }
     return
   }
+  // res.Header.Set("X-Guarded", "true")
   /* Process the hints header, unless the Quick flag is set */
   if !action.Quick {
     hints := res.Header.Get("X-Backend-Hints")
