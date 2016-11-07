@@ -194,12 +194,12 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   /* Pass the request to the backend, setting X-Real-IP. */
   req.Header.Set("X-Real-IP", realIp)
   res, err = this.backendTransport.RoundTrip(req)
-  if err != nil {
-    /* If the backend returns a 5xx header for the / path. */
+  if err != nil || (res.StatusCode >= 500 && res.StatusCode <= 599) {
+    /* The backend could not be contacted, or returned a 5xx error. */
     if this.fallbackRootUrl != "" && req.URL.Path == "/" {
+      /* Redirect path / to the configured fallback URL. */
       res = redirectResponse(302, this.fallbackRootUrl);
       err = nil;
-      return
     }
     return
   }
