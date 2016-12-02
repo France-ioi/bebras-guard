@@ -138,6 +138,18 @@ func (this *CounterCache) pull(key string, counter *Counter) {
   }
 }
 
+/* Pushes the local part of the counter to the remote store, if non-zero. */
+func (this *CounterCache) Push(key string) {
+  var counter *Counter
+  this.m.Lock()
+  if val, hit := this.lru.Get(key); hit {
+    counter = val.(*Counter)
+    this.push(key, counter)
+  }
+  this.m.Unlock()
+  return
+}
+
 /* Pushes the local part of the counter to the remote store.
    The local part is also added to the shared part, and cleared. */
 func (this *CounterCache) push(key string, counter *Counter) {

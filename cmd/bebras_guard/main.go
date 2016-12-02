@@ -36,9 +36,7 @@ type ResponseHandler struct {
   activity *bg.ActivityCache
 }
 
-type TagSet map[string]struct{}
-
-func (this ResponseHandler) handleHint(clientIpTag string, tagSet TagSet, hint string) {
+func (this ResponseHandler) handleHint(clientIpTag string, tagSet bg.TagSet, hint string) {
   /* Split the hint as path:name */
   parts := strings.Split(hint, `:`)
   if len(parts) > 2 {
@@ -46,20 +44,24 @@ func (this ResponseHandler) handleHint(clientIpTag string, tagSet TagSet, hint s
     return
   }
   var path []string = strings.Split(parts[0], `.`)
+  var tags []string
   /* Perform tag replacement */
-  for tagIndex, tag := range path {
-    if tag == "ClientIp" || tag == "ClientIP" {
-      path[tagIndex] = clientIpTag
-    } else {
-      r, _ := utf8.DecodeRuneInString(tag)
-      if (unicode.IsUpper(r)) {
-        tagSet[tag] = struct{}{}
-      }
+  for tagIndex, tagExpr := range path {
+    tagValue := tagExpr
+    if tagExpr == "ClientIp" || tagExpr == "ClientIP" {
+      tagValue = clientIpTag
+    }
+    path[tagIndex] = tagValue
+    r, _ := utf8.DecodeRuneInString(tagValue)
+    if (unicode.IsUpper(r)) {
+      tags = append(tags, tagValue)
+      tagSet[tagValue] = struct{}{}
     }
   }
   /* Build the key and increment the counter */
   parts[0] = strings.Join(path, ".")
   key := "c." + strings.Join(parts, ".")
+  this.activity.Assoc(key, tags)
   this.counters.Get(key)
   this.counters.Incr(key)
   /* If a counter name is given, also increment the "total" counter. */
@@ -79,15 +81,15 @@ func (this ResponseHandler) Run(ch chan BackendResponse) {
   for {
     response := <-ch
     clientIpTag := "IP(" + response.hexIp + ")"
-    tagSet := make(TagSet)
+    tagSet := make(bg.TagSet)
     hints := strings.Fields(response.hints)
     for _, hint := range hints {
       this.handleHint(clientIpTag, tagSet, unquote(hint))
     }
-    this.activity.Bump(clientIpTag)
     for tag, _ := range tagSet {
       this.activity.Bump(tag)
     }
+    this.activity.Flush()
   }
 }
 
@@ -171,12 +173,7 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
       realIp = strings.Trim(realIp, `[]`)
     }
   }
-  /* Convert the IP-address to HEX representation for use in keys.
-     ParseIP always returns an IPv6 address, try to convert to IPv4. */
-  parsedIp := net.ParseIP(realIp)
-  if parsedIp4 := parsedIp.To4(); parsedIp4 != nil {
-    parsedIp = parsedIp4
-  }
+  parsedIp := parseIp(realIp)
   hexIp := hex.EncodeToString(parsedIp)
   /* Look up in the action cache */
   action := this.actions.Get("a." + hexIp)
@@ -191,6 +188,18 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
     err = nil
     return
   }
+  /* Request injection */
+  if req.URL.Path == "/inject" {
+    realIp = req.FormValue("ip")
+    parsedIp = parseIp(realIp)
+    hexIp = hex.EncodeToString(parsedIp)
+    hints := req.FormValue("hints")
+    this.responseChannel <- BackendResponse{realIp, hexIp, hints}
+    res = plainTextResponse(200, strconv.Itoa(len(this.responseChannel)))
+    err = nil
+    return
+  }
+
   /* Pass the request to the backend, setting X-Real-IP. */
   req.Header.Set("X-Real-IP", realIp)
   res, err = this.backendTransport.RoundTrip(req)
@@ -214,6 +223,16 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   /* Hide the X-Backend-Hints header from clients. */
   res.Header.Del("X-Backend-Hints")
   return
+}
+
+func parseIp(ip string) ([]byte) {
+  /* Convert the IP-address to HEX representation for use in keys.
+     ParseIP always returns an IPv6 address, try to convert to IPv4. */
+  parsedIp := net.ParseIP(ip)
+  if parsedIp4 := parsedIp.To4(); parsedIp4 != nil {
+    parsedIp = parsedIp4
+  }
+  return parsedIp
 }
 
 //
@@ -269,7 +288,7 @@ func main() {
 
   /* Build and configure the caches. */
   var counterCache *bg.CounterCache = bg.NewCounterCache(redisClient)
-  var activityCache *bg.ActivityCache = bg.NewActivityCache(redisClient)
+  var activityCache *bg.ActivityCache = bg.NewActivityCache(redisClient, counterCache)
   var actionCache *bg.ActionCache = bg.NewActionCache(redisClient)
   reconfigure := func() {
     counterCache.Configure(LoadCounterCacheConfig(config))
