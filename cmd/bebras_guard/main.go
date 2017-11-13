@@ -106,6 +106,7 @@ func (cb *ClosingBuffer) Close() (error) {
 // Reverse proxy
 
 type ProxyTransport struct {
+  verbose bool
   proxyDepth int
   responseChannel chan BackendResponse
   backendTransport http.RoundTripper
@@ -159,7 +160,8 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
      There is an extra reverse-proxy layer added by bebras-guard, so when
      running behind 1 reverse-proxy, set proxyDepth to 2.
   */
-  xff := strings.Split(req.Header.Get("X-Forwarded-For"), ", ")
+  forwardedFor := req.Header.Get("X-Forwarded-For");
+  xff := strings.Split(forwardedFor, ", ")
   nProxies := len(xff) - 1
   if nProxies >= this.proxyDepth {
     realIp = xff[nProxies - this.proxyDepth]
@@ -175,6 +177,11 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   }
   parsedIp := parseIp(realIp)
   hexIp := hex.EncodeToString(parsedIp)
+
+  /* Optionally log */
+  if (this.verbose) {
+    log.Printf("%s: XFF[%s] XRI[%s]\n", hexIp, forwardedFor, realIp);
+  }
   /* Look up in the action cache */
   action := this.actions.Get("a." + hexIp)
   if action.Block {
@@ -273,6 +280,8 @@ func main() {
 
   log.Printf("bebras-guard is starting\n")
 
+  verbose := os.Getenv("VERBOSE") == "1"
+
   redisAddr := os.Getenv("REDIS_SERVER")
   if redisAddr == "" {
     redisAddr = "127.0.0.1:6379"
@@ -354,6 +363,7 @@ func main() {
   var proxyDepth int
   proxyDepth, _ = strconv.Atoi(os.Getenv("PROXY_DEPTH"))
   proxyTransport := &ProxyTransport{
+    verbose: verbose,
     proxyDepth: proxyDepth,
     responseChannel: responseChannel,
     backendTransport: backendTransport,
