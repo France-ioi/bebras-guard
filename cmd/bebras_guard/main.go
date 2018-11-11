@@ -183,7 +183,7 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
     log.Printf("%s: XFF[%s] XRI[%s]\n", hexIp, forwardedFor, realIp);
   }
   /* Look up in the action cache */
-  action := this.actions.Get("a." + hexIp)
+  action := this.actions.Get("a.IP(" + hexIp + ")")
   if action.Block {
     res = plainTextResponse(429, "too many requests")
     err = nil
