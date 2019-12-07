@@ -62,13 +62,13 @@ func (this ResponseHandler) handleHint(clientIpTag string, tagSet bg.TagSet, hin
   parts[0] = strings.Join(path, ".")
   key := "c." + strings.Join(parts, ".")
   this.activity.Assoc(key, tags)
-  this.counters.Get(key)
+//  this.counters.Get(key)
   this.counters.Incr(key)
   /* If a counter name is given, also increment the "total" counter. */
   if len(parts) == 2 {
     parts[1] = "total"
     key = "c." + strings.Join(parts, ".")
-    this.counters.Get(key)
+//    this.counters.Get(key)
     this.counters.Incr(key)
   }
 }
@@ -111,6 +111,7 @@ type ProxyTransport struct {
   responseChannel chan BackendResponse
   backendTransport http.RoundTripper
   actions *bg.ActionCache
+  bucket *bg.LeakyBucket
   fallbackRootUrl string
 }
 
@@ -184,8 +185,13 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   }
   /* Look up in the action cache */
   action := this.actions.Get("a.IP(" + hexIp + ")")
-  if action.Block {
-    res = plainTextResponse(429, "too many requests")
+  /* Rate limit */
+  var rateLimitPass bool = true
+  if action.RateLimit {
+    rateLimitPass = this.bucket.GetSlot(hexIp)
+  }
+  if action.Block || !rateLimitPass {
+    res = plainTextResponse(429, "Too many requests. Please try again later.")
     err = nil
     return
   }
@@ -210,12 +216,19 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   /* Pass the request to the backend, setting X-Real-IP. */
   req.Header.Set("X-Real-IP", realIp)
   res, err = this.backendTransport.RoundTrip(req)
+
+  if (this.verbose) {
+    log.Printf("%s: XFF[%s] XRI[%s] completed\n", hexIp, forwardedFor, realIp);
+  }
+
   if err != nil || (res.StatusCode >= 500 && res.StatusCode <= 599) {
     /* The backend could not be contacted, or returned a 5xx error. */
     if this.fallbackRootUrl != "" && req.URL.Path == "/" {
       /* Redirect path / to the configured fallback URL. */
       res = redirectResponse(302, this.fallbackRootUrl);
       err = nil;
+    } else if res.StatusCode >= 500 && res.StatusCode <= 599 {
+      this.responseChannel <- BackendResponse{realIp, hexIp, "ClientIP.request:error"}
     }
     return
   }
@@ -224,7 +237,11 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   if !action.Quick {
     hints := res.Header.Get("X-Backend-Hints")
     if hints != "" {
+      log.Printf("received hint %s on path %s", hints, req.URL.Path)
       this.responseChannel <- BackendResponse{realIp, hexIp, hints}
+    } else {
+      log.Printf("no hint on path %s", req.URL.Path)
+      this.responseChannel <- BackendResponse{realIp, hexIp, "ClientIP.request:normal"}
     }
   }
   /* Hide the X-Backend-Hints header from clients. */
@@ -299,6 +316,7 @@ func main() {
   var counterCache *bg.CounterCache = bg.NewCounterCache(redisClient)
   var activityCache *bg.ActivityCache = bg.NewActivityCache(redisClient, counterCache)
   var actionCache *bg.ActionCache = bg.NewActionCache(redisClient)
+  var leakyBucket *bg.LeakyBucket = bg.NewLeakyBucket()
   reconfigure := func() {
     counterCache.Configure(LoadCounterCacheConfig(config))
     activityCache.Configure(LoadActivityCacheConfig(config))
@@ -368,6 +386,7 @@ func main() {
     responseChannel: responseChannel,
     backendTransport: backendTransport,
     actions: actionCache,
+    bucket: leakyBucket,
     fallbackRootUrl: os.Getenv("FALLBACK_ROOT_URL"),
   }
   proxy := &httputil.ReverseProxy{

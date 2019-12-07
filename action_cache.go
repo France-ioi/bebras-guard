@@ -25,9 +25,21 @@ type ActionCacheConfig struct {
 func NewActionCacheConfig() (ActionCacheConfig) {
   return ActionCacheConfig{
     MaxEntries: 65536,
-    ReloadInterval: 60,
+    ReloadInterval: 10,
     Debug: false,
   }
+}
+
+type Action struct {
+  Block bool  // block requests
+  RateLimit bool // rate-limit requests
+  Quick bool  // skip maintaining counters
+  ReloadTime int64
+}
+
+type PullRequest struct {
+  key string
+  action *Action
 }
 
 type ActionCache struct {
@@ -36,14 +48,8 @@ type ActionCache struct {
   rc *redis.Client
   m sync.Mutex
   lru *lru.Cache
+  pullChannel chan PullRequest
 }
-
-type Action struct {
-  Block bool  // block requests
-  Quick bool  // skip maintaining counters
-  ReloadTime int64
-}
-
 
 /* Returns the action associated with the given key. */
 func (this *ActionCache) Get(key string) (result *Action) {
@@ -57,11 +63,11 @@ func (this *ActionCache) Get(key string) (result *Action) {
     result = val.(*Action)
     stale = result.ReloadTime <= time.Now().Unix()
     if this.debug {
-      fmt.Printf("got action %s %s %s %s\n", key,
-        blockMsg[result.Block], quickMsg[result.Quick], staleMsg[stale])
+      fmt.Printf("got action %s %s %s %s %s\n", key,
+        blockMsg[result.Block], rateMsg[result.RateLimit], quickMsg[result.Quick], staleMsg[stale])
     }
   } else {
-    result = &Action{Block: false, Quick: false, ReloadTime: time.Now().Unix()}
+    result = &Action{Block: false, RateLimit: false, Quick: false, ReloadTime: time.Now().Unix() + this.reloadInterval}
     this.lru.Add(key, result)
     if this.debug {
       fmt.Printf("new %s\n", key)
@@ -70,7 +76,10 @@ func (this *ActionCache) Get(key string) (result *Action) {
   }
   this.m.Unlock()
   if stale {
-    this.pull(key, result)
+    // Update action from redis
+    // Note : we update ReloadTime so other threads don't try to update it too
+    result.ReloadTime = time.Now().Unix() + this.reloadInterval
+    this.pullChannel <- PullRequest{key, result}
   }
   return
 }
@@ -86,12 +95,19 @@ func (this *ActionCache) pull(key string, action *Action) {
   switch value {
   case "b": // blacklist
     action.Block = true
+    action.RateLimit = false
+    action.Quick = false
+  case "r": // ratelimit
+    action.Block = false
+    action.RateLimit = true
     action.Quick = false
   case "W": // whitelist + quick
     action.Block = false
+    action.RateLimit = false
     action.Quick = true
   default: // no data, whitelist, ...
     action.Block = false
+    action.RateLimit = false
     action.Quick = false
   }
   action.ReloadTime = time.Now().Unix() + this.reloadInterval
@@ -117,8 +133,18 @@ func (this *ActionCache) Configure(config ActionCacheConfig) {
 }
 
 func NewActionCache(redisClient *redis.Client) (*ActionCache) {
-  return &ActionCache{
+  var pullChannelSize int = 128
+  pullChannel := make(chan PullRequest, pullChannelSize)
+  var ac *ActionCache = &ActionCache{
     rc: redisClient,
     lru: &lru.Cache{},
+    pullChannel: pullChannel,
   }
+  go func() {
+    for {
+      pull := <-pullChannel
+      ac.pull(pull.key, pull.action)
+    }
+  }()
+  return ac
 }

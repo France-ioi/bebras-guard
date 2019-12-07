@@ -4,6 +4,7 @@ import (
   "fmt"
   "github.com/golang/groupcache/lru"
   "gopkg.in/redis.v5"
+  "strconv"
   "sync"
   "time"
   "sync/atomic"
@@ -43,10 +44,10 @@ func NewCounterCacheConfig() (CounterCacheConfig) {
   return CounterCacheConfig{
     LocalCacheSize: 65536,
     CounterTtl: 3600,
-    LocalMaximum: 100,
+    LocalMaximum: 10,
     ReloadInterval: 60,
-    FlushInterval: 60,
-    FlushRatio: 0.1,
+    FlushInterval: 8,
+    FlushRatio: 1,
     Debug: false,
     Quiet: false,
   }
@@ -120,6 +121,9 @@ func (this *CounterCache) Incr(key string) {
   } else {
     counter = &Counter{Local: 1, Shared: 0, ReloadTime: time.Now().Unix() + this.reloadInterval}
     this.lru.Add(key, counter)
+    if 1 > this.localMaximum {
+      this.push(key, counter)
+    }
   }
   this.m.Unlock()
   return
@@ -155,6 +159,8 @@ func (this *CounterCache) Push(key string) {
 func (this *CounterCache) push(key string, counter *Counter) {
   if (counter.Local != 0) {
     var err error
+
+    // Update normal counter
     if err = this.rc.IncrBy(key, counter.Local).Err(); err != nil {
       if !this.quiet {
         fmt.Printf("IncrBy %d failed on %s\n", counter.Local, key)
@@ -170,6 +176,25 @@ func (this *CounterCache) push(key string, counter *Counter) {
     if this.debug {
       fmt.Printf("pushed %s (%d+%d)\n", key, counter.Shared, counter.Local)
     }
+
+    // Update 10-seconds counter
+    var tkey string = "d(" + strconv.FormatInt(time.Now().Unix() / 10, 10) + ")." + key;
+    if err = this.rc.IncrBy(tkey, counter.Local).Err(); err != nil {
+      if !this.quiet {
+        fmt.Printf("IncrBy %d failed on %s\n", counter.Local, tkey)
+      }
+      return
+    }
+    if err = this.rc.Expire(tkey, time.Duration(60) * time.Second).Err(); err != nil {
+      if !this.quiet {
+        fmt.Printf("Expire failed on %s\n", tkey)
+      }
+      return
+    }
+    if this.debug {
+      fmt.Printf("pushed %s (%d)\n", tkey, counter.Local)
+    }
+
     counter.Shared += counter.Local
     counter.Local = 0
   }
