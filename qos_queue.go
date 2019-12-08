@@ -2,7 +2,6 @@ package bebras_guard
 
 import (
   "sync"
-  "fmt"
 )
 
 // Implements a queue with simple QoS slot attribution
