@@ -111,7 +111,10 @@ type ProxyTransport struct {
   responseChannel chan BackendResponse
   backendTransport http.RoundTripper
   actions *bg.ActionCache
-  bucket *bg.LeakyBucket
+  masterBucket *bg.LeakyBucket
+  staticBucket *bg.LeakyBucket
+  rateLimitBucket *bg.LeakyBucket
+  queue *bg.QosQueue
   fallbackRootUrl string
 }
 
@@ -154,6 +157,25 @@ func redirectResponse(statusCode int, location string) (*http.Response) {
   return res
 }
 
+// TODO :: find some way to configure
+var staticPaths = []string{
+    "/bower_components/",
+    "/contests/",
+    "/contestAssets/",
+    "/common.js",
+    "/images/",
+    }
+
+func isStaticPath(req *http.Request) (bool) {
+  path := req.URL.Path
+  for _, head := range staticPaths {
+    if strings.HasPrefix(path, head) {
+      return true
+    }
+  }
+  return false
+}
+
 func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err error) {
   var realIp string
   /* Determine the user's real IP address.
@@ -188,7 +210,11 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   /* Rate limit */
   var rateLimitPass bool = true
   if action.RateLimit {
-    rateLimitPass = this.bucket.GetSlot(hexIp)
+    rateLimitPass = this.rateLimitBucket.GetSlot(hexIp)
+  } else if isStaticPath(req) {
+    rateLimitPass = this.staticBucket.GetSlot(hexIp)
+  } else {
+    rateLimitPass = this.masterBucket.GetSlot(hexIp)
   }
   if action.Block || !rateLimitPass {
     res = plainTextResponse(429, "Too many requests. Please try again later.")
@@ -212,6 +238,10 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
     err = nil
     return
   }
+
+  /* Get a slot in the qos queue */
+  this.queue.GetSlot(hexIp)
+  defer this.queue.ReleaseSlot()
 
   /* Pass the request to the backend, setting X-Real-IP. */
   req.Header.Set("X-Real-IP", realIp)
@@ -237,7 +267,6 @@ func (this ProxyTransport) RoundTrip(req *http.Request) (res *http.Response, err
   if !action.Quick {
     hints := res.Header.Get("X-Backend-Hints")
     if hints != "" {
-      log.Printf("received hint %s on path %s", hints, req.URL.Path)
       this.responseChannel <- BackendResponse{realIp, hexIp, hints}
     } else {
       log.Printf("no hint on path %s", req.URL.Path)
@@ -316,13 +345,38 @@ func main() {
   var counterCache *bg.CounterCache = bg.NewCounterCache(redisClient)
   var activityCache *bg.ActivityCache = bg.NewActivityCache(redisClient, counterCache)
   var actionCache *bg.ActionCache = bg.NewActionCache(redisClient)
-  var leakyBucket *bg.LeakyBucket = bg.NewLeakyBucket()
+  var qosQueue *bg.QosQueue = bg.NewQosQueue()
   reconfigure := func() {
     counterCache.Configure(LoadCounterCacheConfig(config))
     activityCache.Configure(LoadActivityCacheConfig(config))
     actionCache.Configure(LoadActionCacheConfig(config))
   }
   reconfigure()
+
+  var masterBucket *bg.LeakyBucket = bg.NewLeakyBucket()
+  var staticBucket *bg.LeakyBucket = bg.NewLeakyBucket()
+  var rateLimitBucket *bg.LeakyBucket = bg.NewLeakyBucket()
+
+  masterBucket.Configure(bg.LeakyBucketConfig{
+    MaxBurst: 20,
+    MaxWaiting: 40,
+    Delay: 300 * time.Millisecond,
+    })
+  staticBucket.Configure(bg.LeakyBucketConfig{
+    MaxBurst: 30,
+    MaxWaiting: 200,
+    Delay: 50 * time.Millisecond,
+    })
+  rateLimitBucket.Configure(bg.LeakyBucketConfig{
+    MaxBurst: 2,
+    MaxWaiting: 30,
+    Delay: 1000 * time.Millisecond,
+    })
+
+  masterBucket.Run()
+  staticBucket.Run()
+  rateLimitBucket.Run()
+
 
   /* Reload the configuration every 60 seconds */
   reconfigTicker := time.NewTicker(60 * time.Second)
@@ -386,7 +440,10 @@ func main() {
     responseChannel: responseChannel,
     backendTransport: backendTransport,
     actions: actionCache,
-    bucket: leakyBucket,
+    masterBucket: masterBucket,
+    staticBucket: staticBucket,
+    rateLimitBucket: rateLimitBucket,
+    queue: qosQueue,
     fallbackRootUrl: os.Getenv("FALLBACK_ROOT_URL"),
   }
   proxy := &httputil.ReverseProxy{

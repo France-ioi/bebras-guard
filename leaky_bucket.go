@@ -19,13 +19,19 @@ import (
 
 
 type LeakyBucket struct {
-  maxBurst int64
-  maxWaiting int64
+  maxBurst int
+  maxWaiting int
   delay time.Duration
   m sync.Mutex
   active bool
-  burst map[string]int64
-  waiting map[string]int64
+  burst map[string]int
+  waiting map[string]int
+}
+
+type LeakyBucketConfig struct {
+  MaxBurst int
+  MaxWaiting int
+  Delay time.Duration
 }
 
 func (this *LeakyBucket) GetSlot(key string) (result bool) {
@@ -73,23 +79,32 @@ func (this *LeakyBucket) Leak() {
   this.active = stillActive
 }
 
+func (this *LeakyBucket) Configure(config LeakyBucketConfig) {
+  this.maxBurst = config.MaxBurst
+  this.maxWaiting = config.MaxWaiting
+  this.delay = config.Delay
+}
+
+func (this *LeakyBucket) Run() {
+  leakTicker := time.NewTicker(this.delay)
+  go func() {
+    for {
+      select {
+      case <-leakTicker.C:
+        this.Leak()
+      }
+    }
+  }()
+}
+
 func NewLeakyBucket() (*LeakyBucket) {
   // TODO :: proper configuration
   var lc *LeakyBucket = &LeakyBucket{
     maxBurst: 5,
     maxWaiting: 30,
-    delay: 1000 * time.Millisecond,
-    burst: make(map[string]int64),
-    waiting: make(map[string]int64),
+    delay: 100 * time.Millisecond,
+    burst: make(map[string]int),
+    waiting: make(map[string]int),
   }
-  leakTicker := time.NewTicker(lc.delay)
-  go func() {
-    for {
-      select {
-      case <-leakTicker.C:
-        lc.Leak()
-      }
-    }
-  }()
   return lc
 }
